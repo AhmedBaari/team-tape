@@ -1,0 +1,52 @@
+{
+  "voiceChannelIds": [
+    "123456789012345678",
+    "987654321098765432"
+  ],
+  "outputChannelId": "111222333444555666",
+  "adminChannelId": "555666777888999000",
+  "recordingSettings": {
+    "bitrate": 128,
+    "format": "mp3",
+    "multiTrack": true,
+    "minParticipants": 2,
+    "stopDelaySeconds": 60,
+    "maxDurationMinutes": 480,
+    "autoStartThreshold": 2
+  },
+  "perplexityApi": {
+    "model": "llama-3.1-sonar-large-128k-online",
+    "maxTokens": 1000,
+    "temperature": 0.7
+  },
+  "mongodb": {
+    "uri": "mongodb://localhost:27017/teamtape",
+    "options": {
+      "useNewUrlParser": true,
+      "useUnifiedTopology": true,
+      "socketTimeoutMS": 45000,
+      "serverSelectionTimeoutMS": 5000
+    }
+  },
+  "logging": {
+    "level": "info",
+    "maxFileSize": 5242880,
+    "maxFiles": 5
+  },
+  "features": {
+    "enableAutoJoin": true,
+    "enableDiarization": true,
+    "enableAiSummary": true,
+    "enableDiscordUpload": true,
+    "enableNotifications": true
+  },
+  "rateLimits": {
+    "perplexityCallsPerHour": 60,
+    "transcriptionJobsPerDay": 100
+  },
+  "retention": {
+    "recordingDaysToKeep": 30,
+    "transcriptDaysToKeep": 90,
+    "summaryDaysToKeep": 365
+  }
+}
