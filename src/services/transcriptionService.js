@@ -1,15 +1,20 @@
 import fs from 'fs';
 import path from 'path';
+import FormData from 'form-data';
+import axios from 'axios';
 import logger from '../utils/logger.js';
 
 /**
  * Transcription Service
  * Handles audio transcription and speaker diarization
- * Currently supports local Whisper model and timestamps with speaker mapping
+ * Integrates with local Faster-Whisper Docker service
  */
 class TranscriptionService {
   constructor() {
     this.userMappings = this.loadUserMappings();
+    this.whisperApiUrl = process.env.WHISPER_API_URL || 'http://localhost:7704';
+    this.whisperModel = process.env.WHISPER_MODEL || 'base';
+    this.whisperLanguage = process.env.WHISPER_LANGUAGE || 'en';
   }
 
   /**
@@ -89,34 +94,99 @@ class TranscriptionService {
   }
 
   /**
-   * Perform actual transcription
-   * PLACEHOLDER: Integrate with real Whisper service
+   * Perform actual transcription using local Faster-Whisper API
    * @private
    * @param {string} audioFilePath - Audio file path
    * @returns {Promise<Object>} Raw transcription data
    */
   async performTranscription(audioFilePath) {
-    // PLACEHOLDER IMPLEMENTATION
-    // In production, integrate with one of:
-    // - Local Whisper model via Python subprocess
-    // - OpenAI Whisper API
-    // - Self-hosted faster-whisper server
+    try {
+      // Check if Whisper service is available
+      await this.checkWhisperHealth();
 
-    // For now, return a mock transcription
-    // Replace this with actual Whisper integration
+      // Create form data with audio file
+      const form = new FormData();
+      form.append('file', fs.createReadStream(audioFilePath));
+      form.append('language', this.whisperLanguage);
+      form.append('response_format', 'verbose_json');
+      form.append('timestamp_granularities', 'segment');
+
+      logger.debug('Sending audio to Whisper API', {
+        url: `${this.whisperApiUrl}/v1/audio/transcriptions`,
+        fileSize: fs.statSync(audioFilePath).size,
+        language: this.whisperLanguage,
+      });
+
+      // Call Whisper API
+      const response = await axios.post(
+        `${this.whisperApiUrl}/v1/audio/transcriptions`,
+        form,
+        {
+          headers: {
+            ...form.getHeaders(),
+          },
+          timeout: 300000, // 5 minutes timeout
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+        }
+      );
+
+      logger.info('Whisper transcription completed', {
+        duration: response.data.duration,
+        language: response.data.language,
+        segments: response.data.segments?.length || 0,
+      });
+
+      return response.data;
+    } catch (error) {
+      // Fallback to placeholder if Whisper service is unavailable
+      if (error.code === 'ECONNREFUSED' || error.response?.status === 404) {
+        logger.warn('Whisper service unavailable, using placeholder transcription', {
+          error: error.message,
+        });
+        return this.getPlaceholderTranscription();
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Check if Whisper service is healthy
+   * @private
+   * @returns {Promise<boolean>}
+   */
+  async checkWhisperHealth() {
+    try {
+      await axios.get(`${this.whisperApiUrl}/health`, { timeout: 5000 });
+      return true;
+    } catch (error) {
+      logger.warn('Whisper health check failed', {
+        url: this.whisperApiUrl,
+        error: error.message,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Get placeholder transcription when Whisper is unavailable
+   * @private
+   * @returns {Object} Placeholder transcription data
+   */
+  getPlaceholderTranscription() {
     logger.info(
-      'Placeholder transcription - integrate with Whisper service in production'
+      'Using placeholder transcription - Whisper service not available'
     );
 
     return {
-      text: 'Meeting discussion audio - awaiting Whisper integration',
+      text: 'Meeting discussion audio - Whisper service unavailable',
       segments: [
         {
           id: 0,
           seek: 0,
           start: 0.0,
           end: 10.0,
-          text: 'Sample meeting transcript text',
+          text: 'Transcription service temporarily unavailable. Please ensure Docker container is running.',
           tokens: [],
           temperature: 0.0,
           avg_logprob: -0.5,
@@ -125,6 +195,7 @@ class TranscriptionService {
         },
       ],
       language: 'en',
+      duration: 10.0,
     };
   }
 

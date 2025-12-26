@@ -194,7 +194,20 @@ class AudioRecorder {
       });
 
       audioStream.on('error', (error) => {
-        logger.error(`Audio stream error for user ${userId}`, { error: error.message });
+        // Handle DAVE encryption errors gracefully
+        // These are non-fatal as we can still capture unencrypted audio
+        if (error.message && error.message.includes('DecryptionFailed')) {
+          logger.warn(`DAVE decryption error for user ${userId} (audio still captured)`, {
+            error: error.message,
+            meetingId,
+          });
+        } else {
+          logger.error(`Audio stream error for user ${userId}`, {
+            error: error.message,
+            stack: error.stack,
+            meetingId,
+          });
+        }
       });
 
       logger.info(`Started recording audio from user: ${user.username} (${userId}) in ${meetingId}`);
