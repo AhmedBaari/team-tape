@@ -16,17 +16,11 @@ const logLevels = {
   debug: 4,
 };
 
-const colors = {
-  error: '\x1b[31m', // Red
-  warn: '\x1b[33m',  // Yellow
-  info: '\x1b[36m',  // Cyan
-  http: '\x1b[35m',  // Magenta
-  debug: '\x1b[32m', // Green
-  reset: '\x1b[0m',  // Reset
-};
-
+// Simple format without colorize for now
 const format = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
+  winston.format.errors({ stack: true }),
+  winston.format.splat(),
   winston.format.printf((info) => {
     const { timestamp, level, message, ...metadata } = info;
     const metaStr = Object.keys(metadata).length ? JSON.stringify(metadata, null, 2) : '';
@@ -35,11 +29,16 @@ const format = winston.format.combine(
 );
 
 const transports = [
-  // Console transport with colors
+  // Console transport without custom colors (use winston defaults)
   new winston.transports.Console({
     format: winston.format.combine(
-      winston.format.colorize({ colors }),
-      format
+      winston.format.colorize(), // Use default winston colorize
+      winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
+      winston.format.printf((info) => {
+        const { timestamp, level, message, ...metadata } = info;
+        const metaStr = Object.keys(metadata).length ? JSON.stringify(metadata) : '';
+        return `${timestamp} [${level}]: ${message} ${metaStr}`;
+      })
     ),
   }),
   // File transport for all logs
@@ -80,6 +79,7 @@ const logger = winston.createLogger({
       format,
     }),
   ],
+  exitOnError: false,
 });
 
 export default logger;
