@@ -34,7 +34,7 @@ class AudioRecorder {
 
   /**
    * Ensure recordings directory exists
-   * @private
+      * @private
    */
   ensureDirectoryExists() {
     if (!fs.existsSync(this.recordingsPath)) {
@@ -351,6 +351,7 @@ class AudioRecorder {
           duration: Date.now() - session.startTime,
           participants: session.userAudioStreams.size,
           channelId: session.channelId,
+          guildId: session.guildId, // FIX: Include guildId for filtering
         });
       }
     }
