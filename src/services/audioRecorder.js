@@ -87,7 +87,8 @@ class AudioRecorder {
         startTime: Date.now(),
         filePath,
         fileName: filename,
-        userAudioStreams: new Map(),
+        userAudioStreams: new Map(), // Map<userId, StreamInfo[]>
+        userStreamCount: new Map(),  // Map<userId, number> - track stream numbers
         isRecording: true,
       };
 
@@ -128,6 +129,12 @@ class AudioRecorder {
 
   /**
    * Handle user speaking event and subscribe to their audio
+   * Creates a NEW subscription each time a user speaks to enable continuous recording.
+   * 
+   * IMPORTANT: EndBehaviorType.AfterSilence ends the stream after 1 second of silence,
+   * so we MUST allow re-subscription on each speaking event to capture all speech segments.
+   * Each stream is stored in an array per user and concatenated chronologically later.
+   * 
    * @param {string} meetingId - Meeting identifier
    * @param {string} userId - Discord user ID
    * @param {VoiceConnection} connection - Voice connection
@@ -141,18 +148,39 @@ class AudioRecorder {
         return;
       }
 
-      // Skip if already subscribed to this user
-      if (session.userAudioStreams.has(userId)) {
-        return;
+      // Initialize user stream array if first time
+      if (!session.userAudioStreams.has(userId)) {
+        session.userAudioStreams.set(userId, []);
+        session.userStreamCount.set(userId, 0);
+        session.lastSubscriptionTime = session.lastSubscriptionTime || new Map();
       }
 
+      // Debounce: Prevent creating new subscription too quickly (within 2 seconds)
+      // This reduces fragmentation and prevents Whisper from incorrectly identifying speakers
+      const now = Date.now();
+      const lastTime = session.lastSubscriptionTime?.get(userId) || 0;
+      if (now - lastTime < 2000) {
+        logger.debug(`Debouncing subscription for user ${userId} (${now - lastTime}ms since last)`);
+        return;
+      }
+      session.lastSubscriptionTime.set(userId, now);
+
+      // Get stream number for this user
+      const streamNumber = session.userStreamCount.get(userId);
+      session.userStreamCount.set(userId, streamNumber + 1);
+
       // Subscribe to user's audio stream
+      // Use 3 seconds of silence to avoid fragmenting natural speech patterns
+      // This prevents Whisper from incorrectly alternating speakers
       const audioStream = connection.receiver.subscribe(userId, {
         end: {
           behavior: EndBehaviorType.AfterSilence,
-          duration: 1000, // End after 1 second of silence
+          duration: 3000, // End after 3 seconds of silence
         },
       });
+
+      // Increase max listeners to prevent warnings (multiple subscriptions expected)
+      audioStream.setMaxListeners(20);
 
       // Get user info
       const user = await client.users.fetch(userId).catch(() => ({ id: userId, username: 'Unknown' }));
@@ -164,10 +192,10 @@ class AudioRecorder {
         frameSize: 960,
       });
 
-      // Create user-specific recording file
+      // Create user-specific recording file with stream number
       const userFilePath = path.join(
         this.recordingsPath,
-        `${meetingId}-${userId}-${Date.now()}.pcm`
+        `${meetingId}-${userId}-${streamNumber}-${Date.now()}.pcm`
       );
       const writeStream = fs.createWriteStream(userFilePath);
 
@@ -180,16 +208,31 @@ class AudioRecorder {
         writeStream,
         filePath: userFilePath,
         startTime: Date.now(),
+        streamNumber,
       };
 
-      session.userAudioStreams.set(userId, userStreamInfo);
+      // Add to array (not replace)
+      session.userAudioStreams.get(userId).push(userStreamInfo);
 
       // Pipeline: Opus stream -> Decoder -> File
       audioStream.pipe(opusDecoder).pipe(writeStream);
 
-      // Handle stream end
+      // Handle stream end - ensure data is flushed
       audioStream.on('end', () => {
         logger.debug(`Audio stream ended for user ${user.username} in ${meetingId}`);
+        // Force flush and close decoder, then close write stream
+        if (opusDecoder && !opusDecoder.destroyed) {
+          opusDecoder.end();
+        }
+      });
+
+      // Ensure write stream closes when decoder ends
+      opusDecoder.on('end', () => {
+        writeStream.end();
+      });
+
+      opusDecoder.on('error', (error) => {
+        logger.warn(`Decoder error for user ${userId}`, { error: error.message });
         writeStream.end();
       });
 
@@ -284,31 +327,36 @@ class AudioRecorder {
 
       // Close all user audio streams and wait for them to finish
       const closePromises = [];
-      for (const [userId, streamInfo] of session.userAudioStreams) {
-        try {
-          if (streamInfo.stream) {
-            streamInfo.stream.destroy();
+      for (const [userId, streamInfoArray] of session.userAudioStreams) {
+        for (const streamInfo of streamInfoArray) {
+          try {
+            if (streamInfo.stream) {
+              streamInfo.stream.destroy();
+            }
+            if (streamInfo.decoder) {
+              streamInfo.decoder.destroy();
+            }
+            if (streamInfo.writeStream) {
+              // Wait for write stream to finish
+              closePromises.push(
+                new Promise((resolve) => {
+                  streamInfo.writeStream.end(() => resolve());
+                })
+              );
+            }
+          } catch (error) {
+            logger.warn(`Error closing stream for user ${userId}`, {
+              error: error.message,
+            });
           }
-          if (streamInfo.decoder) {
-            streamInfo.decoder.destroy();
-          }
-          if (streamInfo.writeStream) {
-            // Wait for write stream to finish
-            closePromises.push(
-              new Promise((resolve) => {
-                streamInfo.writeStream.end(() => resolve());
-              })
-            );
-          }
-        } catch (error) {
-          logger.warn(`Error closing stream for user ${userId}`, {
-            error: error.message,
-          });
         }
       }
 
       // Wait for all streams to close
       await Promise.all(closePromises);
+
+      // Wait additional 500ms to ensure all file writes are flushed to disk
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Disconnect from voice channel
       session.connection.destroy();
@@ -350,6 +398,7 @@ class AudioRecorder {
 
   /**
    * Merge PCM audio files and convert to MP3
+   * Creates SEPARATE MP3 files per user for accurate speaker identification
    * @param {Object} session - Recording session object
    * @returns {Promise<void>}
    * @private
@@ -362,55 +411,126 @@ class AudioRecorder {
         userCount: userAudioStreams.size,
       });
 
-      // Get all PCM files
-      const pcmFiles = Array.from(userAudioStreams.values())
-        .map((streamInfo) => streamInfo.filePath)
-        .filter((fp) => fp && fs.existsSync(fp));
+      // Create per-user MP3 files for accurate speaker identification
+      const userAudioFiles = [];
 
-      if (pcmFiles.length === 0) {
-        logger.warn(`No audio files found for ${meetingId}, creating empty MP3`);
+      for (const [userId, streamInfoArray] of userAudioStreams) {
+        // Sort this user's segments by start time
+        streamInfoArray.sort((a, b) => a.startTime - b.startTime);
+
+        const pcmFiles = streamInfoArray
+          .map((streamInfo) => streamInfo.filePath)
+          .filter((fp) => fp && fs.existsSync(fp));
+
+        if (pcmFiles.length === 0) {
+          logger.warn(`No audio files found for user ${userId}`);
+          continue;
+        }
+
+        // Create user-specific MP3 file
+        const userMp3Path = filePath.replace('.mp3', `-${userId}.mp3`);
+
+        if (pcmFiles.length === 1) {
+          // Single file - just convert PCM to MP3
+          const pcmFile = pcmFiles[0];
+          await execPromise(
+            `ffmpeg -f s16le -ar 48000 -ac 2 -i "${pcmFile}" -q:a 2 -y "${userMp3Path}"`
+          );
+          logger.info(`Converted single PCM file for user ${userId}`);
+        } else {
+          // Multiple files - concatenate this user's segments
+          const tempConcatFile = path.join(
+            this.recordingsPath,
+            `${meetingId}-${userId}-concat-temp.pcm`
+          );
+
+          const writeStream = fs.createWriteStream(tempConcatFile);
+
+          for (const pcmFile of pcmFiles) {
+            const data = fs.readFileSync(pcmFile);
+            writeStream.write(data);
+            logger.debug(
+              `Concatenated ${data.length} bytes from ${path.basename(pcmFile)}`
+            );
+          }
+
+          writeStream.end();
+          await new Promise((resolve) => writeStream.on('finish', resolve));
+
+          logger.info(
+            `Concatenated ${pcmFiles.length} PCM files for user ${userId}`
+          );
+
+          // Convert concatenated PCM to MP3
+          await execPromise(
+            `ffmpeg -f s16le -ar 48000 -ac 2 -i "${tempConcatFile}" -q:a 2 -y "${userMp3Path}"`
+          );
+
+          // Clean up temp file
+          try {
+            fs.unlinkSync(tempConcatFile);
+          } catch (error) {
+            logger.warn(
+              `Could not delete temp concat file: ${tempConcatFile}`,
+              { error: error.message }
+            );
+          }
+
+          logger.info(`Converted concatenated PCM to MP3 for user ${userId}`);
+        }
+
+        // Store user audio file info with timestamps from their segments
+        userAudioFiles.push({
+          userId,
+          filePath: userMp3Path,
+          segments: streamInfoArray.map((s) => ({
+            startTime: s.startTime,
+            filePath: s.filePath,
+          })),
+        });
+
+        // Clean up this user's PCM files
+        for (const pcmFile of pcmFiles) {
+          try {
+            fs.unlinkSync(pcmFile);
+            logger.debug(`Deleted PCM file: ${pcmFile}`);
+          } catch (error) {
+            logger.warn(`Could not delete PCM file: ${pcmFile}`, {
+              error: error.message,
+            });
+          }
+        }
+      }
+
+      // Store user audio files info in session for transcription
+      session.userAudioFiles = userAudioFiles;
+
+      // Also create a merged MP3 for backward compatibility (optional)
+      if (userAudioFiles.length > 0) {
+        // Get all segments from all users, sort chronologically
+        const allSegments = [];
+        for (const userFile of userAudioFiles) {
+          for (const segment of userFile.segments) {
+            allSegments.push({
+              userId: userFile.userId,
+              filePath: userFile.filePath,
+              startTime: segment.startTime,
+            });
+          }
+        }
+        allSegments.sort((a, b) => a.startTime - b.startTime);
+
+        logger.info(
+          `Created ${userAudioFiles.length} per-user MP3 files with ${allSegments.length} total segments`
+        );
+      } else {
+        logger.warn(
+          `No audio files found for ${meetingId}, creating empty MP3`
+        );
         // Create an empty/silent MP3 file
         await execPromise(
           `ffmpeg -f lavfi -i anullsrc=r=48000:cl=stereo -t 1 -q:a 2 -y "${filePath}"`
         );
-        return;
-      }
-
-      logger.debug(`Found ${pcmFiles.length} PCM files to merge`, { pcmFiles });
-
-      if (pcmFiles.length === 1) {
-        // Single user - just convert PCM to MP3
-        const pcmFile = pcmFiles[0];
-        await execPromise(
-          `ffmpeg -f s16le -ar 48000 -ac 2 -i "${pcmFile}" -q:a 2 -y "${filePath}"`
-        );
-        logger.info(`Converted single PCM file to MP3: ${filePath}`);
-      } else {
-        // Multiple users - merge then convert
-        // Create a concat filter for ffmpeg
-        const inputFlags = pcmFiles.map(() => '-f s16le -ar 48000 -ac 2').join(' ');
-        const inputs = pcmFiles.map((f) => `-i "${f}"`).join(' ');
-
-        // Use amix filter to mix audio streams
-        const filterComplex = `amix=inputs=${pcmFiles.length}:duration=longest:dropout_transition=2`;
-
-        const ffmpegCmd = `ffmpeg ${pcmFiles.map(() => '-f s16le -ar 48000 -ac 2').join(' ')} ${inputs} -filter_complex "${filterComplex}" -q:a 2 -y "${filePath}"`;
-
-        logger.debug(`Executing ffmpeg command`, { command: ffmpegCmd });
-        await execPromise(ffmpegCmd);
-        logger.info(`Merged ${pcmFiles.length} PCM files to MP3: ${filePath}`);
-      }
-
-      // Clean up PCM files
-      for (const pcmFile of pcmFiles) {
-        try {
-          fs.unlinkSync(pcmFile);
-          logger.debug(`Deleted PCM file: ${pcmFile}`);
-        } catch (error) {
-          logger.warn(`Could not delete PCM file: ${pcmFile}`, {
-            error: error.message,
-          });
-        }
       }
 
       logger.info(`Audio merge completed for ${meetingId}`);
@@ -456,7 +576,7 @@ class AudioRecorder {
           duration: Date.now() - session.startTime,
           participants: session.userAudioStreams.size,
           channelId: session.channelId,
-          guildId: session.guildId, // FIX: Include guildId for filtering
+          guildId: session.guildId,
         });
       }
     }

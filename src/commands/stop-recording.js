@@ -140,41 +140,93 @@ async function processRecording(meetingId, channel, processingMessage, client) {
       throw new Error(`Meeting not found: ${meetingId}`);
     }
 
-    // Validate audio file path exists
-    if (!meeting.audioFilePath) {
-      throw new Error(`Audio file path not found in meeting record: ${meetingId}`);
+    // Get user audio files from recording session
+    const recordingSession = audioRecorder.getSession(meetingId);
+    const userAudioFiles = recordingSession?.userAudioFiles || [];
+
+    // Validate audio files exist (either per-user files or merged file)
+    if (userAudioFiles.length > 0) {
+      // Using per-user audio files - verify they exist
+      logger.info('Using per-user audio files for transcription', {
+        meetingId,
+        userCount: userAudioFiles.length,
+      });
+
+      for (const userFile of userAudioFiles) {
+        if (!fs.existsSync(userFile.filePath)) {
+          throw new Error(`User audio file does not exist: ${userFile.filePath}`);
+        }
+      }
+    } else {
+      // Fallback to merged file - verify it exists
+      if (!meeting.audioFilePath) {
+        throw new Error(`Audio file path not found in meeting record: ${meetingId}`);
+      }
+
+      if (!fs.existsSync(meeting.audioFilePath)) {
+        throw new Error(`Audio file does not exist on disk: ${meeting.audioFilePath}`);
+      }
+
+      logger.debug('Using merged audio file for transcription', {
+        meetingId,
+        audioFilePath: meeting.audioFilePath,
+      });
     }
 
-    // Verify file actually exists on disk
-    if (!fs.existsSync(meeting.audioFilePath)) {
-      throw new Error(`Audio file does not exist on disk: ${meeting.audioFilePath}`);
+    let transcriptPath;
+    let transcription;
+
+    if (userAudioFiles.length === 0) {
+      logger.warn('No per-user audio files found, falling back to single-file transcription');
+      // Fallback to old method if no per-user files
+      transcription = await transcriptionService.transcribeAudio(
+        meeting.audioFilePath,
+        meeting.participants
+      );
+
+      // Save transcript
+      transcriptPath = await transcriptionService.saveTranscript(
+        transcription.formattedTranscript,
+        meetingId
+      );
+
+      await mongoService.saveTranscript(
+        meetingId,
+        transcription.formattedTranscript,
+        transcriptPath
+      );
+
+      logger.info('Transcription completed (fallback mode)', { meetingId });
+    } else {
+      // Step 1: Transcribe each user's audio separately with Discord-level speaker identification
+      logger.info('Starting per-user transcription with Discord speaker identification', {
+        meetingId,
+        userCount: userAudioFiles.length,
+      });
+
+      transcription = await transcriptionService.transcribePerUser(
+        userAudioFiles,
+        meeting.participants
+      );
+
+      // Save transcript
+      transcriptPath = await transcriptionService.saveTranscript(
+        transcription.formattedTranscript,
+        meetingId
+      );
+
+      await mongoService.saveTranscript(
+        meetingId,
+        transcription.formattedTranscript,
+        transcriptPath
+      );
+
+      logger.info('Per-user transcription completed', {
+        meetingId,
+        userCount: transcription.userCount,
+        totalSegments: transcription.segments.length,
+      });
     }
-
-    logger.debug('Audio file validation passed', {
-      meetingId,
-      audioFilePath: meeting.audioFilePath,
-    });
-
-    // Step 1: Transcribe audio
-    logger.info('Starting transcription', { meetingId });
-    const transcription = await transcriptionService.transcribeAudio(
-      meeting.audioFilePath,
-      meeting.participants
-    );
-
-    // Save transcript
-    const transcriptPath = await transcriptionService.saveTranscript(
-      transcription.formattedTranscript,
-      meetingId
-    );
-
-    await mongoService.saveTranscript(
-      meetingId,
-      transcription.formattedTranscript,
-      transcriptPath
-    );
-
-    logger.info('Transcription completed', { meetingId });
 
     // Step 2: Generate summary via Perplexity
     logger.info('Generating summary via Perplexity API', { meetingId });

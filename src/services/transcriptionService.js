@@ -49,6 +49,155 @@ class TranscriptionService {
   }
 
   /**
+   * Transcribe audio files for each user separately with Discord-level speaker identification
+   * This is the CORRECT approach - Discord already knows who's speaking via userId
+   * @param {Array} userAudioFiles - Array of {userId, filePath, segments} objects from audioRecorder
+   * @param {Array} participants - List of meeting participants with {userId, username}
+   * @returns {Promise<Object>} Combined transcription with accurate speaker labels
+   */
+  async transcribePerUser(userAudioFiles, participants = []) {
+    try {
+      if (!userAudioFiles || userAudioFiles.length === 0) {
+        throw new Error('No user audio files provided for transcription');
+      }
+
+      logger.info(`Transcribing audio for ${userAudioFiles.length} users separately`);
+
+      // Create user lookup map
+      const userMap = new Map();
+      for (const participant of participants) {
+        userMap.set(participant.userId, participant.username);
+      }
+
+      // Transcribe each user's audio separately
+      const userTranscriptions = [];
+
+      for (const userFile of userAudioFiles) {
+        const { userId, filePath, segments } = userFile;
+
+        if (!fs.existsSync(filePath)) {
+          logger.warn(`Audio file not found for user ${userId}: ${filePath}`);
+          continue;
+        }
+
+        const username = userMap.get(userId) || this.getUserName(userId) || userId;
+
+        logger.info(`Transcribing audio for ${username} (${userId})`);
+
+        // Transcribe this user's audio
+        const transcript = await this.performTranscription(filePath);
+
+        // Add speaker information to each segment
+        const enhancedSegments = transcript.segments.map((segment) => ({
+          ...segment,
+          speaker: username,
+          speakerId: userId,
+          timestamp: this.formatTimestamp(segment.start),
+          // Store original segment start time from Discord
+          discordTimestamp: segments[0]?.startTime || Date.now(),
+        }));
+
+        userTranscriptions.push({
+          userId,
+          username,
+          filePath,
+          segments: enhancedSegments,
+          text: transcript.text,
+          duration: transcript.duration,
+          language: transcript.language,
+          // Store Discord segment info for chronological merging
+          discordSegments: segments,
+        });
+
+        logger.info(
+          `Completed transcription for ${username}: ${enhancedSegments.length} segments, ${Math.floor(transcript.duration)}s`
+        );
+      }
+
+      // Merge all transcriptions chronologically
+      const mergedTranscript = this.mergeTranscriptsChronologically(
+        userTranscriptions
+      );
+
+      logger.info('Completed per-user transcription with accurate speaker labels');
+
+      return mergedTranscript;
+    } catch (error) {
+      logger.error('Error in per-user transcription', {
+        error: error.message,
+        stack: error.stack,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Merge per-user transcripts chronologically using Discord segment timestamps
+   * This ensures segments appear in the order they were actually spoken
+   * @private
+   * @param {Array} userTranscriptions - Array of per-user transcription objects
+   * @returns {Object} Merged transcription data
+   */
+  mergeTranscriptsChronologically(userTranscriptions) {
+    // Flatten all segments from all users with their Discord timestamps
+    const allSegments = [];
+
+    for (const userTranscript of userTranscriptions) {
+      const { username, userId, segments, discordSegments } = userTranscript;
+
+      // Map Whisper segments to Discord segment timestamps
+      for (let i = 0; i < segments.length; i++) {
+        const whisperSegment = segments[i];
+
+        // Use the first Discord segment timestamp as base
+        // (all segments from same user audio file start from same base time)
+        const baseTimestamp = discordSegments[0]?.startTime || Date.now();
+
+        allSegments.push({
+          ...whisperSegment,
+          speaker: username,
+          speakerId: userId,
+          // Combine Discord base timestamp + Whisper relative offset
+          absoluteTimestamp: baseTimestamp + whisperSegment.start * 1000,
+        });
+      }
+    }
+
+    // Sort by absolute timestamp (chronological order)
+    allSegments.sort((a, b) => a.absoluteTimestamp - b.absoluteTimestamp);
+
+    // Format transcript with accurate speaker labels and timestamps
+    const formattedTranscript = allSegments
+      .map((seg) => `[${seg.timestamp}] ${seg.speaker}: ${seg.text}`)
+      .join('\n');
+
+    // Calculate speaking time per user
+    const speakingTimeMap = new Map();
+    for (const userTranscript of userTranscriptions) {
+      speakingTimeMap.set(userTranscript.userId, userTranscript.duration);
+    }
+
+    // Get full text (concatenated)
+    const fullText = allSegments.map((seg) => seg.text).join(' ');
+
+    // Calculate total duration (latest segment end time)
+    const totalDuration =
+      allSegments.length > 0
+        ? allSegments[allSegments.length - 1].end
+        : 0;
+
+    return {
+      fullText,
+      formattedTranscript,
+      segments: allSegments,
+      speakingTime: Object.fromEntries(speakingTimeMap),
+      language: userTranscriptions[0]?.language || 'en',
+      duration: totalDuration,
+      userCount: userTranscriptions.length,
+    };
+  }
+
+  /**
    * Transcribe audio file using local Whisper model
    * Simulates Whisper transcription with speaker diarization
    * In production, integrate with actual Whisper service or API

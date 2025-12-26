@@ -53,3 +53,6 @@ temp/
 
 # Process management
 .pm2/
+
+transcripts/*
+*.lock
