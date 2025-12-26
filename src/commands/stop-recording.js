@@ -32,7 +32,7 @@ export async function execute(interaction) {
   try {
     // Get active recordings for this guild
     const activeRecordings = audioRecorder.getActiveRecordings();
-    
+
     // Filter recordings for this guild
     const guildRecordings = activeRecordings.filter(
       (r) => r.guildId === interaction.guildId
@@ -61,11 +61,23 @@ export async function execute(interaction) {
     // Stop recording
     const recordingInfo = await audioRecorder.stopRecording(meetingId);
 
-    // Update meeting status
+    // Validate recording info
+    if (!recordingInfo.filePath) {
+      throw new Error('Recording stopped but no file path returned');
+    }
+
+    logger.debug('Recording file details', {
+      meetingId,
+      filePath: recordingInfo.filePath,
+      fileName: recordingInfo.fileName,
+    });
+
+    // Update meeting status and save audio file path
     await mongoService.updateMeeting(meetingId, {
       recordingStatus: 'processing',
       endTimestamp: new Date(),
       duration: recordingInfo.duration,
+      audioFilePath: recordingInfo.filePath, // FIX: Save the audio file path
     });
 
     logger.info('Recording stopped, starting processing pipeline', {
@@ -127,6 +139,21 @@ async function processRecording(meetingId, channel, processingMessage, client) {
     if (!meeting) {
       throw new Error(`Meeting not found: ${meetingId}`);
     }
+
+    // Validate audio file path exists
+    if (!meeting.audioFilePath) {
+      throw new Error(`Audio file path not found in meeting record: ${meetingId}`);
+    }
+
+    // Verify file actually exists on disk
+    if (!fs.existsSync(meeting.audioFilePath)) {
+      throw new Error(`Audio file does not exist on disk: ${meeting.audioFilePath}`);
+    }
+
+    logger.debug('Audio file validation passed', {
+      meetingId,
+      audioFilePath: meeting.audioFilePath,
+    });
 
     // Step 1: Transcribe audio
     logger.info('Starting transcription', { meetingId });

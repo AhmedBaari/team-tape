@@ -14,8 +14,12 @@ import {
 import fs from 'fs';
 import path from 'path';
 import { pipeline } from 'stream';
+import { promisify } from 'util';
+import { exec } from 'child_process';
 import prism from 'prism-media';
 import logger from '../utils/logger.js';
+
+const execPromise = promisify(exec);
 
 // Ensure libsodium is ready before any voice operations
 await sodium.ready;
@@ -102,7 +106,7 @@ class AudioRecorder {
       // Handle connection state changes
       connection.on('stateChange', (oldState, newState) => {
         logger.debug(`Voice connection state changed: ${oldState.status} -> ${newState.status}`);
-        
+
         if (newState.status === VoiceConnectionStatus.Disconnected) {
           logger.warn(`Voice connection disconnected for ${meetingId}`);
         }
@@ -265,7 +269,8 @@ class AudioRecorder {
         throw new Error(`Recording session not found: ${meetingId}`);
       }
 
-      // Close all user audio streams
+      // Close all user audio streams and wait for them to finish
+      const closePromises = [];
       for (const [userId, streamInfo] of session.userAudioStreams) {
         try {
           if (streamInfo.stream) {
@@ -275,7 +280,12 @@ class AudioRecorder {
             streamInfo.decoder.destroy();
           }
           if (streamInfo.writeStream) {
-            streamInfo.writeStream.end();
+            // Wait for write stream to finish
+            closePromises.push(
+              new Promise((resolve) => {
+                streamInfo.writeStream.end(() => resolve());
+              })
+            );
           }
         } catch (error) {
           logger.warn(`Error closing stream for user ${userId}`, {
@@ -284,12 +294,18 @@ class AudioRecorder {
         }
       }
 
+      // Wait for all streams to close
+      await Promise.all(closePromises);
+
       // Disconnect from voice channel
       session.connection.destroy();
 
       const duration = Date.now() - session.startTime;
 
       session.isRecording = false;
+
+      // Merge PCM files and convert to MP3
+      await this.mergeAndConvertAudio(session);
 
       const recordingInfo = {
         meetingId,
@@ -316,6 +332,82 @@ class AudioRecorder {
         meetingId,
       });
       throw error;
+    }
+  }
+
+  /**
+   * Merge PCM audio files and convert to MP3
+   * @param {Object} session - Recording session object
+   * @returns {Promise<void>}
+   * @private
+   */
+  async mergeAndConvertAudio(session) {
+    try {
+      const { meetingId, filePath, userAudioStreams } = session;
+
+      logger.info(`Merging audio files for ${meetingId}`, {
+        userCount: userAudioStreams.size,
+      });
+
+      // Get all PCM files
+      const pcmFiles = Array.from(userAudioStreams.values())
+        .map((streamInfo) => streamInfo.filePath)
+        .filter((fp) => fp && fs.existsSync(fp));
+
+      if (pcmFiles.length === 0) {
+        logger.warn(`No audio files found for ${meetingId}, creating empty MP3`);
+        // Create an empty/silent MP3 file
+        await execPromise(
+          `ffmpeg -f lavfi -i anullsrc=r=48000:cl=stereo -t 1 -q:a 2 -y "${filePath}"`
+        );
+        return;
+      }
+
+      logger.debug(`Found ${pcmFiles.length} PCM files to merge`, { pcmFiles });
+
+      if (pcmFiles.length === 1) {
+        // Single user - just convert PCM to MP3
+        const pcmFile = pcmFiles[0];
+        await execPromise(
+          `ffmpeg -f s16le -ar 48000 -ac 2 -i "${pcmFile}" -q:a 2 -y "${filePath}"`
+        );
+        logger.info(`Converted single PCM file to MP3: ${filePath}`);
+      } else {
+        // Multiple users - merge then convert
+        // Create a concat filter for ffmpeg
+        const inputFlags = pcmFiles.map(() => '-f s16le -ar 48000 -ac 2').join(' ');
+        const inputs = pcmFiles.map((f) => `-i "${f}"`).join(' ');
+
+        // Use amix filter to mix audio streams
+        const filterComplex = `amix=inputs=${pcmFiles.length}:duration=longest:dropout_transition=2`;
+
+        const ffmpegCmd = `ffmpeg ${pcmFiles.map(() => '-f s16le -ar 48000 -ac 2').join(' ')} ${inputs} -filter_complex "${filterComplex}" -q:a 2 -y "${filePath}"`;
+
+        logger.debug(`Executing ffmpeg command`, { command: ffmpegCmd });
+        await execPromise(ffmpegCmd);
+        logger.info(`Merged ${pcmFiles.length} PCM files to MP3: ${filePath}`);
+      }
+
+      // Clean up PCM files
+      for (const pcmFile of pcmFiles) {
+        try {
+          fs.unlinkSync(pcmFile);
+          logger.debug(`Deleted PCM file: ${pcmFile}`);
+        } catch (error) {
+          logger.warn(`Could not delete PCM file: ${pcmFile}`, {
+            error: error.message,
+          });
+        }
+      }
+
+      logger.info(`Audio merge completed for ${meetingId}`);
+    } catch (error) {
+      logger.error(`Error merging audio files`, {
+        error: error.message,
+        stack: error.stack,
+        meetingId: session.meetingId,
+      });
+      throw new Error(`Failed to merge audio files: ${error.message}`);
     }
   }
 
