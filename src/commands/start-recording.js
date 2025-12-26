@@ -1,4 +1,4 @@
-import { SlashCommandBuilder } from 'discord.js';
+import { SlashCommandBuilder, MessageFlags } from 'discord.js';
 import { v4 as uuidv4 } from 'uuid';
 import logger from '../utils/logger.js';
 import audioRecorder from '../services/audioRecorder.js';
@@ -28,7 +28,8 @@ export const data = new SlashCommandBuilder()
  * @param {Interaction} interaction - Discord interaction object
  */
 export async function execute(interaction) {
-  await interaction.deferReply({ ephemeral: false });
+  // Use flags instead of deprecated ephemeral option
+  await interaction.deferReply({ flags: MessageFlags.None });
 
   try {
     // Check if user is in a voice channel
@@ -99,7 +100,7 @@ export async function execute(interaction) {
 
     await interaction.editReply({
       embeds: [startEmbed],
-      content: `💶 **Recording Started**\nMeeting ID: \`${meetingId}\``,
+      content: `🎙️ **Recording Started**\nMeeting ID: \`${meetingId}\``,
     });
 
     // Send notification to guild (optional: to a configured channel)
