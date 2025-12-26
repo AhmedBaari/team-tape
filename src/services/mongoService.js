@@ -23,9 +23,9 @@ class MongoService {
 
     while (retries < maxRetries) {
       try {
+        // Note: useNewUrlParser and useUnifiedTopology are deprecated in MongoDB driver v4+
+        // They have no effect and are included only for backwards compatibility
         await mongoose.connect(uri, {
-          useNewUrlParser: true,
-          useUnifiedTopology: true,
           socketTimeoutMS: 45000,
           serverSelectionTimeoutMS: 5000,
         });
