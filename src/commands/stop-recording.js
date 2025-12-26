@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } from 'discord.js';
 import logger from '../utils/logger.js';
 import audioRecorder from '../services/audioRecorder.js';
 import mongoService from '../services/mongoService.js';
@@ -26,14 +26,23 @@ export const data = new SlashCommandBuilder()
  * @param {Interaction} interaction - Discord interaction object
  */
 export async function execute(interaction) {
-  await interaction.deferReply({ ephemeral: false });
+  // Use flags instead of deprecated ephemeral option
+  await interaction.deferReply({ flags: MessageFlags.None });
 
   try {
     // Get active recordings for this guild
     const activeRecordings = audioRecorder.getActiveRecordings();
+    
+    // Filter recordings for this guild
     const guildRecordings = activeRecordings.filter(
       (r) => r.guildId === interaction.guildId
     );
+
+    logger.debug('Active recordings check', {
+      totalActive: activeRecordings.length,
+      guildRecordings: guildRecordings.length,
+      guildId: interaction.guildId,
+    });
 
     if (guildRecordings.length === 0) {
       const embed = createErrorEmbed(
@@ -43,8 +52,11 @@ export async function execute(interaction) {
       return await interaction.editReply({ embeds: [embed] });
     }
 
+    // Get the most recent recording for this guild
     const latestRecording = guildRecordings[guildRecordings.length - 1];
     const meetingId = latestRecording.meetingId;
+
+    logger.info('Stopping recording', { meetingId, guildId: interaction.guildId });
 
     // Stop recording
     const recordingInfo = await audioRecorder.stopRecording(meetingId);
@@ -59,6 +71,7 @@ export async function execute(interaction) {
     logger.info('Recording stopped, starting processing pipeline', {
       meetingId,
       duration: recordingInfo.duration,
+      participants: recordingInfo.participantCount,
     });
 
     // Send processing status
@@ -86,6 +99,7 @@ export async function execute(interaction) {
   } catch (error) {
     logger.error('Error executing stop-recording command', {
       error: error.message,
+      stack: error.stack,
       userId: interaction.user.id,
       guildId: interaction.guildId,
     });
@@ -195,6 +209,7 @@ async function processRecording(meetingId, channel, processingMessage, client) {
   } catch (error) {
     logger.error('Error in recording processing pipeline', {
       error: error.message,
+      stack: error.stack,
       meetingId,
     });
 
