@@ -99,7 +99,7 @@ const meetingSchema = new mongoose.Schema(
     meetingId: {
       type: String,
       required: true,
-      unique: true,
+      unique: true, // This creates an index automatically - no need for explicit index below
       description: 'Unique identifier for this meeting (UUID format)',
     },
     startTimestamp: {
@@ -198,8 +198,8 @@ const meetingSchema = new mongoose.Schema(
   }
 );
 
-// Index on meetingId for fast lookups
-meetingSchema.index({ meetingId: 1 });
+// Compound indexes for efficient queries
+// Note: meetingId already has unique index from schema definition above
 meetingSchema.index({ startTimestamp: -1 });
 meetingSchema.index({ guildId: 1, startTimestamp: -1 });
 meetingSchema.index({ channelId: 1, startTimestamp: -1 });
