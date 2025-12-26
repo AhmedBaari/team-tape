@@ -27,7 +27,7 @@
     "discord.js": "^14.14.1",
     "@discordjs/voice": "^0.16.1",
     "@discordjs/opus": "^0.9.0",
-    "@snazzah/davey": "^1.0.0",
+    "@snazzah/davey": "^0.1.8",
     "prism-media": "^1.3.5",
     "ffmpeg-static": "^5.2.0",
     "mongoose": "^8.0.3",
