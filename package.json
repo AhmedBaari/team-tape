@@ -8,6 +8,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "deploy": "pm2 start src/index.js --name team-tape",
+    "check": "node check-dependencies.js",
     "test": "jest",
     "lint": "eslint src --fix",
     "format": "prettier --write src"
@@ -26,6 +27,7 @@
     "discord.js": "^14.14.1",
     "@discordjs/voice": "^0.16.1",
     "@discordjs/opus": "^0.9.0",
+    "@snazzah/davey": "^1.0.0",
     "prism-media": "^1.3.5",
     "ffmpeg-static": "^5.2.0",
     "mongoose": "^8.0.3",
