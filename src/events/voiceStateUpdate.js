@@ -73,14 +73,22 @@ async function handleUserLeftChannel(channel, member) {
       meetingId: channelRecording.meetingId,
     });
 
+    // Get the full session to access startTime
+    const session = audioRecorder.getSession(channelRecording.meetingId);
+    
     // Update participant data
     try {
+      // Calculate duration properly - use session startTime, not channelRecording
+      const participantDuration = session && session.startTime 
+        ? Math.floor((Date.now() - session.startTime) / 1000) // Convert to seconds
+        : 0;
+
       await mongoService.updateParticipant(
         channelRecording.meetingId,
         member.id,
         {
           leftAt: new Date(),
-          duration: Date.now() - channelRecording.startTime,
+          duration: participantDuration,
         }
       );
     } catch (error) {
@@ -125,6 +133,7 @@ async function handleUserLeftChannel(channel, member) {
           await channel.guild.systemChannel.send(
             `🔴 **Recording Auto-Stopped**\n` +
               `Meeting \`${channelRecording.meetingId}\` ended because everyone left the voice channel.\n` +
+              `Duration: ${recordingInfo.duration}s | Participants: ${recordingInfo.participantCount}\n` +
               `Use \`/stop-recording\` if you want to process and view the results.`
           );
         }
