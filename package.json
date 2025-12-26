@@ -33,7 +33,9 @@
     "dotenv": "^16.4.0",
     "winston": "^3.11.0",
     "fluent-ffmpeg": "^2.1.2",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "sodium-native": "^4.0.0",
+    "libsodium-wrappers": "^0.7.13"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",
