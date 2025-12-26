@@ -45,15 +45,6 @@ export async function execute(interaction) {
     const participants = Array.from(voiceChannel.members.values());
     const participantNames = participants.map((m) => m.displayName);
 
-    // Check minimum participants
-    if (participants.length < 2) {
-      const embed = createErrorEmbed(
-        'Insufficient Participants',
-        `Need at least 2 participants to start recording. Currently: ${participants.length}`
-      );
-      return await interaction.editReply({ embeds: [embed] });
-    }
-
     // Generate unique meeting ID
     const meetingId = `mtg_${uuidv4().substring(0, 8)}`;
 
