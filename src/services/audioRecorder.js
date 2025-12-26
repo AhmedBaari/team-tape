@@ -1,3 +1,7 @@
+// Explicitly import encryption libraries BEFORE @discordjs/voice
+// This ensures they're loaded for ES modules
+import sodium from 'libsodium-wrappers';
+
 import {
   joinVoiceChannel,
   createAudioPlayer,
@@ -12,6 +16,9 @@ import path from 'path';
 import { pipeline } from 'stream';
 import prism from 'prism-media';
 import logger from '../utils/logger.js';
+
+// Ensure libsodium is ready before any voice operations
+await sodium.ready;
 
 /**
  * Audio Recorder Service
