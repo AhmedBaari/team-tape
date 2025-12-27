@@ -129,12 +129,6 @@ class AudioRecorder {
 
   /**
    * Handle user speaking event and subscribe to their audio
-   * Creates a NEW subscription each time a user speaks to enable continuous recording.
-   * 
-   * IMPORTANT: EndBehaviorType.AfterSilence ends the stream after 1 second of silence,
-   * so we MUST allow re-subscription on each speaking event to capture all speech segments.
-   * Each stream is stored in an array per user and concatenated chronologically later.
-   * 
    * @param {string} meetingId - Meeting identifier
    * @param {string} userId - Discord user ID
    * @param {VoiceConnection} connection - Voice connection
@@ -155,11 +149,11 @@ class AudioRecorder {
         session.lastSubscriptionTime = session.lastSubscriptionTime || new Map();
       }
 
-      // Debounce: Prevent creating new subscription too quickly (within 2 seconds)
-      // This reduces fragmentation and prevents Whisper from incorrectly identifying speakers
+      // Debounce: Prevent creating new subscription too quickly
+      // Increased to 3 seconds to reduce fragmentation
       const now = Date.now();
       const lastTime = session.lastSubscriptionTime?.get(userId) || 0;
-      if (now - lastTime < 2000) {
+      if (now - lastTime < 3000) {
         logger.debug(`Debouncing subscription for user ${userId} (${now - lastTime}ms since last)`);
         return;
       }
@@ -170,36 +164,32 @@ class AudioRecorder {
       session.userStreamCount.set(userId, streamNumber + 1);
 
       // Subscribe to user's audio stream
-      // Use 3 seconds of silence to avoid fragmenting natural speech patterns
-      // This prevents Whisper from incorrectly alternating speakers
+      // Use 5 seconds of silence to reduce fragmentation
       const audioStream = connection.receiver.subscribe(userId, {
         end: {
           behavior: EndBehaviorType.AfterSilence,
-          duration: 3000, // End after 3 seconds of silence
+          duration: 5000, // Increased from 3000 to 5000ms
         },
       });
 
-      // Increase max listeners to prevent warnings (multiple subscriptions expected)
       audioStream.setMaxListeners(20);
 
-      // Get user info
       const user = await client.users.fetch(userId).catch(() => ({ id: userId, username: 'Unknown' }));
 
-      // Create decoder for Opus to PCM
       const opusDecoder = new prism.opus.Decoder({
         rate: 48000,
         channels: 2,
         frameSize: 960,
       });
 
-      // Create user-specific recording file with stream number
+      // Create user-specific recording file
       const userFilePath = path.join(
         this.recordingsPath,
-        `${meetingId}-${userId}-${streamNumber}-${Date.now()}.pcm`
+        `${meetingId}-${userId}-${streamNumber}-${now}.pcm`
       );
       const writeStream = fs.createWriteStream(userFilePath);
 
-      // Store user audio stream reference
+      // Store user audio stream reference with accurate timestamp
       const userStreamInfo = {
         userId: user.id,
         username: user.username,
@@ -207,11 +197,10 @@ class AudioRecorder {
         decoder: opusDecoder,
         writeStream,
         filePath: userFilePath,
-        startTime: Date.now(),
+        startTime: now, // This is the absolute timestamp when this segment started
         streamNumber,
       };
 
-      // Add to array (not replace)
       session.userAudioStreams.get(userId).push(userStreamInfo);
 
       // Pipeline: Opus stream -> Decoder -> File
