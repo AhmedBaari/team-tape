@@ -7,6 +7,103 @@ import logger from './utils/logger.js';
 import mongoService from './services/mongoService.js';
 import audioRecorder from './services/audioRecorder.js';
 
+// ============================================
+// EXPRESS API SERVER SETUP
+// ============================================
+import express from 'express';
+import cors from 'cors';
+
+// Initialize Express app
+const app = express();
+const API_PORT = process.env.API_PORT || 3000;
+
+// Middleware
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || '*',
+  credentials: true,
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  logger.debug(`${req.method} ${req.path}`, {
+    query: req.query,
+    ip: req.ip,
+  });
+  next();
+});
+
+// Import API routes (will create these in Part 7)
+// Import will be added later when routes are created
+
+// Health check endpoint (no auth required)
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    services: {
+      discord: client.isReady() ? 'connected' : 'disconnected',
+      mongodb: mongoService.isConnected ? mongoService.isConnected() ? 'connected' : 'disconnected' : 'unknown',
+    },
+  });
+});
+
+// API routes will be mounted here
+// app.use('/api/v1', apiRouter);
+// app.use('/mcp', mcpRouter);
+
+// 404 handler - must be after all routes
+// Will import from errorHandler later
+// app.use(notFoundHandler);
+
+// Error handling middleware - must be last
+// Will import from errorHandler later
+// app.use(errorHandler);
+
+// Start Express server
+let httpServer;
+
+function startExpressServer() {
+  return new Promise((resolve, reject) => {
+    try {
+      httpServer = app.listen(API_PORT, () => {
+        console.log(`✅ API server listening on port ${API_PORT}`);
+        logger.info(`API server started on port ${API_PORT}`);
+        resolve();
+      });
+
+      httpServer.on('error', (error) => {
+        console.error('❌ Failed to start API server:', error.message);
+        logger.error('Failed to start API server', { error: error.message });
+        reject(error);
+      });
+    } catch (error) {
+      console.error('❌ Error initializing API server:', error.message);
+      reject(error);
+    }
+  });
+}
+
+// Serve dashboard static files (after building)
+const dashboardPath = path.join(__dirname, '../dashboard/dist');
+if (fs.existsSync(dashboardPath)) {
+  app.use(express.static(dashboardPath));
+
+  // Serve index.html for all non-API routes
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/mcp') || req.path === '/health') {
+      return next();
+    }
+    res.sendFile(path.join(dashboardPath, 'index.html'));
+  });
+  console.log('✅ Dashboard served from /');
+}
+
+// Export app for testing
+export { app };
+
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,16 +148,16 @@ client.commands = new Collection();
 async function startBot() {
   try {
     console.log('📦 Loading commands...');
-    
+
     // Load commands
     const commandsPath = path.join(__dirname, 'commands');
     console.log('Commands path:', commandsPath);
-    
+
     if (!fs.existsSync(commandsPath)) {
       console.error('❌ Commands directory not found:', commandsPath);
       process.exit(1);
     }
-    
+
     const commandFiles = fs
       .readdirSync(commandsPath)
       .filter((file) => file.endsWith('.js'));
@@ -73,9 +170,9 @@ async function startBot() {
         const filePath = path.join(commandsPath, file);
         const fileUrl = new URL(`file://${filePath}`);
         console.log(`  Loading command: ${file}`);
-        
+
         const command = await import(fileUrl.href);
-        
+
         if (command.data && command.execute) {
           client.commands.set(command.data.name, command);
           commands.push(command.data.toJSON());
@@ -94,7 +191,7 @@ async function startBot() {
     console.log('📦 Loading events...');
     const eventsPath = path.join(__dirname, 'events');
     console.log('Events path:', eventsPath);
-    
+
     if (fs.existsSync(eventsPath)) {
       const eventFiles = fs
         .readdirSync(eventsPath)
@@ -107,9 +204,9 @@ async function startBot() {
           const filePath = path.join(eventsPath, file);
           const fileUrl = new URL(`file://${filePath}`);
           console.log(`  Loading event: ${file}`);
-          
+
           const event = await import(fileUrl.href);
-          
+
           if (event.default) {
             if (event.default.once) {
               client.once(event.default.name, (...args) =>
@@ -170,6 +267,7 @@ async function startBot() {
       console.log(`✅ Bot logged in as ${client.user.tag}`);
       logger.info(`✅ Bot logged in as ${client.user.tag}`);
 
+
       // Connect to MongoDB
       if (process.env.MONGODB_URI) {
         try {
@@ -183,6 +281,17 @@ async function startBot() {
         }
       } else {
         console.log('ℹ️  No MONGODB_URI configured, skipping database connection');
+      }
+
+      // Start Express API server
+      try {
+        console.log('🌐 Starting Express API server...');
+        await startExpressServer();
+        console.log('✅ Express API server started');
+      } catch (error) {
+        console.error('⚠️  Failed to start API server:', error.message);
+        logger.error('Failed to start API server', { error: error.message });
+        console.log('⚠️  Continuing without API server (Discord bot features still available)');
       }
 
       // Set bot status
@@ -266,6 +375,17 @@ async function shutdown() {
     console.log('✅ Audio recorder shutdown complete');
     logger.info('Audio recorder shutdown complete');
 
+    // Close Express server
+    if (httpServer) {
+      await new Promise((resolve) => {
+        httpServer.close(() => {
+          console.log('✅ Express server closed');
+          logger.info('Express server closed');
+          resolve();
+        });
+      });
+    }
+
     // Disconnect from MongoDB
     await mongoService.disconnect();
     console.log('✅ MongoDB disconnected');
@@ -299,6 +419,29 @@ process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection', { error: String(reason) });
   process.exit(1);
 });
+
+
+
+// Mount API router and error handlers (Part 7.2)
+import apiRouter from './api/routes/index.js';
+import { notFoundHandler, errorHandler } from './api/utils/errorHandler.js';
+import mcpRouter from './api/routes/mcp.js';
+import { authenticateApiKey } from './api/middleware/auth.js';
+
+// Mount API routes
+app.use('/api/v1', apiRouter);
+
+// Mount MCP routes
+if (process.env.ENABLE_MCP !== 'false') {
+  app.use('/mcp', authenticateApiKey, mcpRouter);
+  console.log('✅ MCP endpoints enabled at /mcp');
+}
+
+// 404 handler - must be after all routes
+app.use(notFoundHandler);
+
+// Error handling middleware - must be last
+app.use(errorHandler);
 
 // Start the bot
 startBot().catch((error) => {
