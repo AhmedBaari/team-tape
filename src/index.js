@@ -36,7 +36,7 @@ import cors from 'cors';
 
 // Initialize Express app
 const app = express();
-const API_PORT = process.env.API_PORT || 3000;
+const API_PORT = process.env.API_PORT || 7705;
 
 // Middleware
 app.use(cors({
