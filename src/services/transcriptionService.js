@@ -15,9 +15,10 @@ class TranscriptionService {
     this.whisperApiUrl = process.env.WHISPER_API_URL || 'http://localhost:7704';
     this.whisperModel = process.env.WHISPER_MODEL || 'base';
     this.whisperLanguage = process.env.WHISPER_LANGUAGE || 'en';
-    
+
     // Deduplication settings
     this.similarityThreshold = 0.85; // 85% similarity = duplicate
+    this.containmentThreshold = 0.90; // 90% of text contained in another = duplicate
     this.minSegmentDuration = 0.3; // Minimum 300ms for valid segment
   }
 
@@ -59,18 +60,18 @@ class TranscriptionService {
    */
   calculateSimilarity(str1, str2) {
     if (!str1 || !str2) return 0;
-    
+
     const s1 = str1.toLowerCase().trim();
     const s2 = str2.toLowerCase().trim();
-    
+
     if (s1 === s2) return 1;
     if (s1.length === 0 || s2.length === 0) return 0;
-    
+
     // Check if one is substring of other
     if (s1.includes(s2) || s2.includes(s1)) {
       return Math.min(s1.length, s2.length) / Math.max(s1.length, s2.length);
     }
-    
+
     // Levenshtein distance
     const matrix = [];
     for (let i = 0; i <= s1.length; i++) {
@@ -79,7 +80,7 @@ class TranscriptionService {
     for (let j = 0; j <= s2.length; j++) {
       matrix[0][j] = j;
     }
-    
+
     for (let i = 1; i <= s1.length; i++) {
       for (let j = 1; j <= s2.length; j++) {
         const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
@@ -90,64 +91,125 @@ class TranscriptionService {
         );
       }
     }
-    
+
     const distance = matrix[s1.length][s2.length];
     const maxLength = Math.max(s1.length, s2.length);
     return 1 - distance / maxLength;
   }
 
   /**
+   * Check if one text is substantially contained within another
+   * Handles cases where one segment is a subset of another
+   * @private
+   * @param {string} text1 - First text
+   * @param {string} text2 - Second text
+   * @returns {Object} Containment analysis result
+   */
+  checkContainment(text1, text2) {
+    if (!text1 || !text2) return { isContained: false, ratio: 0 };
+
+    const t1 = text1.toLowerCase().trim();
+    const t2 = text2.toLowerCase().trim();
+
+    // Direct substring check
+    if (t1.includes(t2)) {
+      return { isContained: true, ratio: t2.length / t1.length, container: 'text1', contained: 'text2' };
+    }
+    if (t2.includes(t1)) {
+      return { isContained: true, ratio: t1.length / t2.length, container: 'text2', contained: 'text1' };
+    }
+
+    // Word-level containment check
+    const words1 = t1.split(/\s+/).filter(w => w.length > 2);
+    const words2 = t2.split(/\s+/).filter(w => w.length > 2);
+
+    if (words1.length === 0 || words2.length === 0) {
+      return { isContained: false, ratio: 0 };
+    }
+
+    // Count how many words from the shorter text appear in the longer
+    const [shorter, longer] = words1.length <= words2.length
+      ? [words1, words2]
+      : [words2, words1];
+
+    const longerSet = new Set(longer);
+    const matchCount = shorter.filter(w => longerSet.has(w)).length;
+    const containmentRatio = matchCount / shorter.length;
+
+    return {
+      isContained: containmentRatio >= this.containmentThreshold,
+      ratio: containmentRatio,
+      matchedWords: matchCount,
+      totalWords: shorter.length,
+    };
+  }
+
+  /**
    * Remove duplicate/near-duplicate segments from transcription
-   * Handles Whisper's tendency to repeat phrases
+   * Handles Whisper's tendency to repeat phrases and overlapping audio
    * @private
    * @param {Array} segments - Array of transcription segments
    * @returns {Array} Deduplicated segments
    */
   deduplicateSegments(segments) {
     if (!segments || segments.length === 0) return [];
-    
+
     const deduplicated = [];
     const recentTexts = []; // Track recent texts for duplicate detection
-    const windowSize = 5; // Look back window for duplicate detection
-    
+    const windowSize = 10; // Increased window for better duplicate detection
+
     for (const segment of segments) {
       const text = segment.text?.trim();
-      
+
       // Skip empty or very short segments
       if (!text || text.length < 3) continue;
-      
+
       // Skip segments that are too short in duration (likely noise)
       const duration = (segment.end || 0) - (segment.start || 0);
       if (duration < this.minSegmentDuration) continue;
-      
+
       // Check for duplicates in recent window
       let isDuplicate = false;
+      let duplicateReason = '';
+
       for (const recent of recentTexts.slice(-windowSize)) {
+        // Check 1: Levenshtein similarity
         const similarity = this.calculateSimilarity(text, recent.text);
         if (similarity >= this.similarityThreshold) {
           isDuplicate = true;
-          logger.debug('Duplicate segment detected and removed', {
-            original: recent.text,
-            duplicate: text,
-            similarity: similarity.toFixed(2),
-          });
+          duplicateReason = `similarity ${(similarity * 100).toFixed(0)}%`;
+          break;
+        }
+
+        // Check 2: Containment (one is subset of another)
+        const containment = this.checkContainment(text, recent.text);
+        if (containment.isContained) {
+          isDuplicate = true;
+          duplicateReason = `containment ${(containment.ratio * 100).toFixed(0)}%`;
           break;
         }
       }
-      
+
       // Check if this text is a repetition within itself (Whisper hallucination)
       if (!isDuplicate && this.isInternalRepetition(text)) {
         // Clean the text by removing repetitions
         segment.text = this.cleanRepetitions(text);
         if (segment.text.length < 3) continue;
       }
-      
+
       if (!isDuplicate) {
         deduplicated.push(segment);
         recentTexts.push({ text, speaker: segment.speaker });
+      } else {
+        logger.debug('Duplicate segment removed', {
+          text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
+          reason: duplicateReason,
+          speaker: segment.speaker,
+        });
       }
     }
-    
+
+    logger.info(`Deduplication complete: ${segments.length} -> ${deduplicated.length} segments`);
     return deduplicated;
   }
 
@@ -159,27 +221,27 @@ class TranscriptionService {
    */
   isInternalRepetition(text) {
     if (!text || text.length < 10) return false;
-    
+
     // Split into words and check for consecutive repetitions
     const words = text.toLowerCase().split(/\s+/);
     if (words.length < 4) return false;
-    
+
     let repeatCount = 0;
     for (let i = 1; i < words.length; i++) {
       if (words[i] === words[i - 1] && words[i].length > 2) {
         repeatCount++;
       }
     }
-    
+
     // Check for phrase repetitions
     const halfLen = Math.floor(text.length / 2);
     const firstHalf = text.substring(0, halfLen).trim();
     const secondHalf = text.substring(halfLen).trim();
-    
+
     if (this.calculateSimilarity(firstHalf, secondHalf) > 0.8) {
       return true;
     }
-    
+
     return repeatCount >= 2;
   }
 
@@ -191,20 +253,20 @@ class TranscriptionService {
    */
   cleanRepetitions(text) {
     if (!text) return '';
-    
+
     // Remove consecutive duplicate words
     const words = text.split(/\s+/);
     const cleaned = [words[0]];
-    
+
     for (let i = 1; i < words.length; i++) {
       if (words[i].toLowerCase() !== words[i - 1].toLowerCase()) {
         cleaned.push(words[i]);
       }
     }
-    
+
     // If text is mostly repetition, keep first occurrence
     let result = cleaned.join(' ');
-    
+
     // Check for phrase-level repetition and take first occurrence
     const patterns = result.match(/(.{10,}?)\1+/g);
     if (patterns) {
@@ -215,7 +277,7 @@ class TranscriptionService {
         }
       }
     }
-    
+
     return result.trim();
   }
 
@@ -231,7 +293,10 @@ class TranscriptionService {
         throw new Error('No user audio files provided for transcription');
       }
 
-      logger.info(`Transcribing audio for ${userAudioFiles.length} users separately`);
+      logger.info('Starting per-user transcription', {
+        userCount: userAudioFiles.length,
+        participantCount: participants.length,
+      });
 
       // Create user lookup map
       const userMap = new Map();
@@ -263,7 +328,6 @@ class TranscriptionService {
         }
 
         // Get the actual start time from Discord segments
-        // This is when the user actually started speaking
         const baseStartTime = segments?.[0]?.startTime || Date.now();
 
         // Add speaker information to each segment
@@ -271,7 +335,6 @@ class TranscriptionService {
           ...segment,
           speaker: username,
           speakerId: userId,
-          // Store absolute timestamp: base Discord time + Whisper relative offset
           absoluteStartTime: baseStartTime + (segment.start * 1000),
           absoluteEndTime: baseStartTime + (segment.end * 1000),
           segmentIndex: index,
@@ -297,12 +360,18 @@ class TranscriptionService {
         throw new Error('No successful transcriptions from any user audio');
       }
 
+      logger.info('All user audio transcribed, creating combined transcript', {
+        totalSegments: userTranscriptions.reduce((sum, ut) => sum + ut.segments.length, 0),
+        userCount: userTranscriptions.length,
+      });
+
       // Merge all transcriptions chronologically with deduplication
       const mergedTranscript = this.mergeTranscriptsChronologically(userTranscriptions);
 
-      logger.info('Completed per-user transcription with accurate speaker labels', {
+      logger.info('Per-user transcription completed successfully', {
         totalSegments: mergedTranscript.segments.length,
-        users: userTranscriptions.length,
+        userCount: userTranscriptions.length,
+        duration: mergedTranscript.duration?.toFixed(2),
       });
 
       return mergedTranscript;
@@ -341,8 +410,12 @@ class TranscriptionService {
     // Sort by absolute start time (chronological order)
     allSegments.sort((a, b) => a.absoluteStartTime - b.absoluteStartTime);
 
+    logger.debug(`Pre-deduplication segment count: ${allSegments.length}`);
+
     // Apply deduplication BEFORE calculating relative timestamps
     const deduplicatedSegments = this.deduplicateSegments(allSegments);
+
+    logger.debug(`Post-deduplication segment count: ${deduplicatedSegments.length}`);
 
     if (deduplicatedSegments.length === 0) {
       logger.warn('All segments were deduplicated - returning empty transcript');
@@ -362,7 +435,7 @@ class TranscriptionService {
 
     // Calculate relative timestamps and format
     const speakingTimeMap = new Map();
-    
+
     const finalSegments = deduplicatedSegments.map((seg) => {
       const relativeStartSec = (seg.absoluteStartTime - meetingStartTime) / 1000;
       const relativeEndSec = (seg.absoluteEndTime - meetingStartTime) / 1000;
@@ -429,7 +502,7 @@ class TranscriptionService {
 
       // Apply deduplication
       enrichedTranscript.segments = this.deduplicateSegments(enrichedTranscript.segments);
-      
+
       // Regenerate formatted transcript after deduplication
       enrichedTranscript.formattedTranscript = enrichedTranscript.segments
         .map((seg) => `[${seg.timestamp}] ${seg.speaker}:  ${seg.text}`)
@@ -468,7 +541,7 @@ class TranscriptionService {
       form.append('language', this.whisperLanguage);
       form.append('response_format', 'verbose_json');
       form.append('timestamp_granularities', 'segment');
-      
+
       // Add additional parameters to improve transcription quality
       // These help reduce repetition in Whisper output
       form.append('temperature', '0.0'); // Deterministic output
@@ -520,13 +593,12 @@ class TranscriptionService {
    */
   async checkWhisperHealth() {
     try {
-      await axios.get(`${this.whisperApiUrl}/health`, { timeout: 5000 });
-      return true;
-    } catch (error) {
-      logger.warn('Whisper health check failed', {
-        url: this.whisperApiUrl,
-        error: error.message,
+      const response = await axios.get(`${this.whisperApiUrl}/health`, {
+        timeout: 5000,
       });
+      return response.status === 200;
+    } catch (error) {
+      logger.debug('Whisper health check failed', { error: error.message });
       return false;
     }
   }

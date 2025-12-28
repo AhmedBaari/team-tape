@@ -6,6 +6,27 @@ import { Client, GatewayIntentBits, Collection, REST, Routes } from 'discord.js'
 import logger from './utils/logger.js';
 import mongoService from './services/mongoService.js';
 import audioRecorder from './services/audioRecorder.js';
+import apiRouter from './api/routes/index.js';
+import { notFoundHandler, errorHandler } from './api/utils/errorHandler.js';
+import mcpRouter from './api/routes/mcp.js';
+import { authenticateApiKey } from './api/middleware/auth.js';
+
+// Get __dirname equivalent in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Initialize Discord bot client early (needed for health endpoint)
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
+  ],
+});
+
+// Store commands in collection
+client.commands = new Collection();
 
 // ============================================
 // EXPRESS API SERVER SETUP
@@ -50,23 +71,17 @@ app.get('/health', (req, res) => {
   });
 });
 
-// API routes will be mounted here
-// app.use('/api/v1', apiRouter);
-// app.use('/mcp', mcpRouter);
-
-// 404 handler - must be after all routes
-// Will import from errorHandler later
-// app.use(notFoundHandler);
-
-// Error handling middleware - must be last
-// Will import from errorHandler later
-// app.use(errorHandler);
-
 // Start Express server
 let httpServer;
 
 function startExpressServer() {
   return new Promise((resolve, reject) => {
+    // Check if server is already running
+    if (httpServer && httpServer.listening) {
+      console.log('ℹ️  API server already running');
+      return resolve();
+    }
+
     try {
       httpServer = app.listen(API_PORT, () => {
         console.log(`✅ API server listening on port ${API_PORT}`);
@@ -86,27 +101,30 @@ function startExpressServer() {
   });
 }
 
+// Mount API routes
+app.use('/api/v1', apiRouter);
+
+// Mount MCP routes
+if (process.env.ENABLE_MCP !== 'false') {
+  app.use('/mcp', authenticateApiKey, mcpRouter);
+  console.log('✅ MCP endpoints enabled at /mcp');
+}
+
 // Serve dashboard static files (after building)
 const dashboardPath = path.join(__dirname, '../dashboard/dist');
 if (fs.existsSync(dashboardPath)) {
   app.use(express.static(dashboardPath));
-
-  // Serve index.html for all non-API routes
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/mcp') || req.path === '/health') {
-      return next();
-    }
-    res.sendFile(path.join(dashboardPath, 'index.html'));
-  });
-  console.log('✅ Dashboard served from /');
+  console.log('✅ Dashboard static files configured');
 }
+
+// 404 handler - must be after all routes
+app.use(notFoundHandler);
+
+// Error handling middleware - must be last
+app.use(errorHandler);
 
 // Export app for testing
 export { app };
-
-// Get __dirname equivalent in ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 console.log('🚀 Starting TeamTape bot...');
 console.log('📁 Working directory:', process.cwd());
@@ -126,21 +144,7 @@ if (!process.env.DISCORD_CLIENT_ID) {
 }
 
 console.log('✅ Environment variables validated');
-
-// Initialize Discord bot client
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.DirectMessages,
-  ],
-});
-
 console.log('✅ Discord client initialized');
-
-// Store commands in collection
-client.commands = new Collection();
 
 /**
  * Main startup function
@@ -261,13 +265,10 @@ async function startBot() {
     });
 
     /**
-     * Bot startup handler
+     * Bot ready handler - Connect to MongoDB, start API server, register commands
+     * Note: The 'ready' event is handled in events/ready.js for user tag logging
      */
-    client.once('ready', async () => {
-      console.log(`✅ Bot logged in as ${client.user.tag}`);
-      logger.info(`✅ Bot logged in as ${client.user.tag}`);
-
-
+    client.once('clientReady', async (readyClient) => {
       // Connect to MongoDB
       if (process.env.MONGODB_URI) {
         try {
@@ -292,17 +293,6 @@ async function startBot() {
         console.error('⚠️  Failed to start API server:', error.message);
         logger.error('Failed to start API server', { error: error.message });
         console.log('⚠️  Continuing without API server (Discord bot features still available)');
-      }
-
-      // Set bot status
-      try {
-        await client.user.setPresence({
-          activities: [{ name: '🎙️ meetings', type: 3 }], // Type 3 = WATCHING
-          status: 'online',
-        });
-        console.log('✅ Bot status set');
-      } catch (error) {
-        console.error('⚠️  Failed to set activity:', error.message);
       }
 
       // Register commands
@@ -419,29 +409,6 @@ process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection', { error: String(reason) });
   process.exit(1);
 });
-
-
-
-// Mount API router and error handlers (Part 7.2)
-import apiRouter from './api/routes/index.js';
-import { notFoundHandler, errorHandler } from './api/utils/errorHandler.js';
-import mcpRouter from './api/routes/mcp.js';
-import { authenticateApiKey } from './api/middleware/auth.js';
-
-// Mount API routes
-app.use('/api/v1', apiRouter);
-
-// Mount MCP routes
-if (process.env.ENABLE_MCP !== 'false') {
-  app.use('/mcp', authenticateApiKey, mcpRouter);
-  console.log('✅ MCP endpoints enabled at /mcp');
-}
-
-// 404 handler - must be after all routes
-app.use(notFoundHandler);
-
-// Error handling middleware - must be last
-app.use(errorHandler);
 
 // Start the bot
 startBot().catch((error) => {

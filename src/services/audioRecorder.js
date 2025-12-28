@@ -38,7 +38,7 @@ class AudioRecorder {
 
   /**
    * Ensure recordings directory exists
-      * @private
+   * @private
    */
   ensureDirectoryExists() {
     if (!fs.existsSync(this.recordingsPath)) {
@@ -88,7 +88,8 @@ class AudioRecorder {
         filePath,
         fileName: filename,
         userAudioStreams: new Map(), // Map<userId, StreamInfo[]>
-        userStreamCount: new Map(),  // Map<userId, number> - track stream numbers
+        userAudioFiles: [],          // For transcription service
+        activeSubscriptions: new Map(), // Map<userId, {subscription, decoder, writeStream, filePath}> - SINGLE active sub per user
         isRecording: true,
       };
 
@@ -102,12 +103,12 @@ class AudioRecorder {
 
       connection.receiver.speaking.on('end', (userId) => {
         logger.debug(`User ${userId} stopped speaking in ${meetingId}`);
+        // Note: We don't close the subscription here - let AfterSilence handle it
       });
 
       // Handle connection state changes
       connection.on('stateChange', (oldState, newState) => {
         logger.debug(`Voice connection state changed: ${oldState.status} -> ${newState.status}`);
-
         if (newState.status === VoiceConnectionStatus.Disconnected) {
           logger.warn(`Voice connection disconnected for ${meetingId}`);
         }
@@ -129,6 +130,7 @@ class AudioRecorder {
 
   /**
    * Handle user speaking event and subscribe to their audio
+   * Uses single-subscription model to prevent audio overlap
    * @param {string} meetingId - Meeting identifier
    * @param {string} userId - Discord user ID
    * @param {VoiceConnection} connection - Voice connection
@@ -142,33 +144,27 @@ class AudioRecorder {
         return;
       }
 
-      // Initialize user stream array if first time
-      if (!session.userAudioStreams.has(userId)) {
-        session.userAudioStreams.set(userId, []);
-        session.userStreamCount.set(userId, 0);
-        session.lastSubscriptionTime = session.lastSubscriptionTime || new Map();
-      }
-
-      // Debounce: Prevent creating new subscription too quickly
-      // Increased to 3 seconds to reduce fragmentation
-      const now = Date.now();
-      const lastTime = session.lastSubscriptionTime?.get(userId) || 0;
-      if (now - lastTime < 3000) {
-        logger.debug(`Debouncing subscription for user ${userId} (${now - lastTime}ms since last)`);
+      // Check if user already has an active subscription
+      // This is the key fix: only ONE subscription per user at a time
+      if (session.activeSubscriptions.has(userId)) {
+        logger.debug(`User ${userId} already has active subscription, skipping new subscription`);
         return;
       }
-      session.lastSubscriptionTime.set(userId, now);
 
-      // Get stream number for this user
-      const streamNumber = session.userStreamCount.get(userId);
-      session.userStreamCount.set(userId, streamNumber + 1);
+      // Initialize user stream array if first time this user speaks
+      if (!session.userAudioStreams.has(userId)) {
+        session.userAudioStreams.set(userId, []);
+      }
+
+      const now = Date.now();
+      const streamNumber = session.userAudioStreams.get(userId).length;
 
       // Subscribe to user's audio stream
-      // Use 5 seconds of silence to reduce fragmentation
+      // Use longer silence duration to capture complete utterances
       const audioStream = connection.receiver.subscribe(userId, {
         end: {
           behavior: EndBehaviorType.AfterSilence,
-          duration: 5000, // Increased from 3000 to 5000ms
+          duration: 5000, // 5 seconds of silence before ending
         },
       });
 
@@ -197,22 +193,31 @@ class AudioRecorder {
         decoder: opusDecoder,
         writeStream,
         filePath: userFilePath,
-        startTime: now, // This is the absolute timestamp when this segment started
+        startTime: now,
         streamNumber,
       };
 
       session.userAudioStreams.get(userId).push(userStreamInfo);
 
+      // Track as active subscription (single per user)
+      session.activeSubscriptions.set(userId, userStreamInfo);
+
       // Pipeline: Opus stream -> Decoder -> File
       audioStream.pipe(opusDecoder).pipe(writeStream);
 
-      // Handle stream end - ensure data is flushed
+      // Handle stream end - clean up and allow new subscription
       audioStream.on('end', () => {
         logger.debug(`Audio stream ended for user ${user.username} in ${meetingId}`);
-        // Force flush and close decoder, then close write stream
+
+        // Clean up decoder
         if (opusDecoder && !opusDecoder.destroyed) {
           opusDecoder.end();
         }
+
+        // Remove from active subscriptions - allows new subscription on next speak event
+        session.activeSubscriptions.delete(userId);
+
+        logger.debug(`Subscription slot freed for user ${userId} in ${meetingId}`);
       });
 
       // Ensure write stream closes when decoder ends
@@ -223,11 +228,11 @@ class AudioRecorder {
       opusDecoder.on('error', (error) => {
         logger.warn(`Decoder error for user ${userId}`, { error: error.message });
         writeStream.end();
+        session.activeSubscriptions.delete(userId);
       });
 
       audioStream.on('error', (error) => {
         // Handle DAVE encryption errors gracefully
-        // These are non-fatal as we can still capture unencrypted audio
         if (error.message && error.message.includes('DecryptionFailed')) {
           logger.warn(`DAVE decryption error for user ${userId} (audio still captured)`, {
             error: error.message,
@@ -240,6 +245,7 @@ class AudioRecorder {
             meetingId,
           });
         }
+        session.activeSubscriptions.delete(userId);
       });
 
       logger.info(`Started recording audio from user: ${user.username} (${userId}) in ${meetingId}`);
@@ -288,7 +294,6 @@ class AudioRecorder {
       session.userAudioStreams.set(user.id, userStreamInfo);
 
       // Connect the pipeline but don't wait for it
-      // Audio will be buffered and processed during transcription
       audioStream.pipe(opusDecoder);
 
       logger.debug(`Recording audio from user: ${user.username} (${meetingId})`);
@@ -340,6 +345,9 @@ class AudioRecorder {
           }
         }
       }
+
+      // Clear active subscriptions
+      session.activeSubscriptions.clear();
 
       // Wait for all streams to close
       await Promise.all(closePromises);
