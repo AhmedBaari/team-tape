@@ -112,15 +112,80 @@ if (process.env.ENABLE_MCP !== 'false') {
 
 // Serve dashboard static files (after building)
 const dashboardPath = path.join(__dirname, '../dashboard/dist');
+console.log('🔍 Dashboard path:', dashboardPath);
+console.log('🔍 Dashboard exists:', fs.existsSync(dashboardPath));
+
 if (fs.existsSync(dashboardPath)) {
+  // Serve static files from dashboard build
   app.use(express.static(dashboardPath));
   console.log('✅ Dashboard static files configured');
+
+  console.log('🔧 Setting up SPA fallback...');
+
+  // Store index.html path for SPA fallback
+  const indexHtmlPath = path.join(dashboardPath, 'index.html');
+  console.log('🔧 Index HTML path:', indexHtmlPath);
+  console.log('🔧 Index HTML exists:', fs.existsSync(indexHtmlPath));
+
+  // SPA fallback - serve index.html for all non-API routes
+  // This enables React Router to handle client-side routing
+  app.use((req, res, next) => {
+    // Skip API and MCP routes - let them fall through to 404 handler
+    if (req.method !== 'GET' || req.path.startsWith('/api') || req.path.startsWith('/mcp') || req.path === '/health') {
+      return next();
+    }
+    // Skip requests for static files that exist
+    if (req.path.includes('.')) {
+      return next();
+    }
+    // Serve the SPA for all other routes
+    res.sendFile(indexHtmlPath);
+  });
+
+  console.log('✅ SPA fallback configured');
+} else {
+  console.warn('⚠️  Dashboard build not found at:', dashboardPath);
+  console.warn('💡 Run: cd dashboard && npm install && npm run build');
+
+  // Provide helpful error page when dashboard not built
+  app.get('/', (req, res) => {
+    res.status(503).send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Dashboard Not Built - TeamTape</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+          .container { max-width: 600px; padding: 40px; text-align: center; }
+          h1 { color: #ffd700; }
+          pre { background: #16213e; padding: 20px; border-radius: 8px; text-align: left; overflow-x: auto; }
+          a { color: #4da6ff; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>⚠️ Dashboard Not Built</h1>
+          <p>The dashboard build was not found. Please run the following commands:</p>
+          <pre>cd dashboard
+npm install
+npm run build</pre>
+          <p>Then restart the server.</p>
+          <p><a href="/health">Check API Health</a> | <a href="/api/v1/meetings">Test API</a></p>
+        </div>
+      </body>
+      </html>
+    `);
+  });
 }
 
-// 404 handler - must be after all routes
+// 404 handler - must be after all routes (only catches API/MCP routes now)
+console.log('🔧 Setting up 404 handler...');
 app.use(notFoundHandler);
 
 // Error handling middleware - must be last
+console.log('🔧 Setting up error handler...');
 app.use(errorHandler);
 
 // Export app for testing

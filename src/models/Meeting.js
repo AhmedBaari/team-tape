@@ -134,6 +134,11 @@ const meetingSchema = new mongoose.Schema(
       type: String,
       description: 'Name of the Discord server',
     },
+    startedBy: {
+      type: String,
+      required: false,
+      description: 'Discord user ID who started the recording (Feature #5)',
+    },
     participants: {
       type: [participantSchema],
       default: [],

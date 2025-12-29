@@ -5,9 +5,28 @@ import mongoService from '../services/mongoService.js';
 import transcriptionService from '../services/transcriptionService.js';
 import perplexityService from '../services/perplexityService.js';
 import { createMeetingSummaryEmbed, createErrorEmbed } from '../utils/embedBuilder.js';
-import { AttachmentBuilder } from 'discord.js';
+import { AttachmentBuilder, EmbedBuilder } from 'discord.js';
 import fs from 'fs';
 import path from 'path';
+
+/**
+ * Get notification channel for a guild
+ * @param {Guild} guild - Discord guild
+ * @returns {Promise<TextChannel|null>}
+ */
+async function getNotificationChannel(guild) {
+  try {
+    const config = await mongoService.getOrCreateGuildConfig(guild.id);
+    if (config.notificationChannelId) {
+      const channel = await guild.channels.fetch(config.notificationChannelId).catch(() => null);
+      if (channel && channel.isTextBased()) return channel;
+    }
+  } catch (err) {
+    logger.debug('Error fetching notification channel from GuildConfig', { error: err.message, guildId: guild.id });
+  }
+  // Fallback to system channel
+  return guild.systemChannel;
+}
 
 /**
  * Stop Recording Command
@@ -28,20 +47,52 @@ export const data = new SlashCommandBuilder()
 export async function execute(interaction) {
   // Use flags instead of deprecated ephemeral option
   await interaction.deferReply({ flags: MessageFlags.None });
+  try {
+    await executeStopRecording(
+      interaction.guildId,
+      interaction.channel,
+      interaction
+    );
+  } catch (error) {
+    logger.error('Error executing stop-recording command', {
+      error: error.message,
+      stack: error.stack,
+      userId: interaction.user.id,
+      guildId: interaction.guildId,
+    });
+    const embed = createErrorEmbed(
+      'Recording Error',
+      'Failed to stop recording. Please try again.'
+    );
+    await interaction.editReply({ embeds: [embed] });
+  }
+}
 
+/**
+ * FEATURE #5: Shared stop recording logic
+ * Can be called by command or button interaction
+ * @param {string} guildId - Discord guild ID
+ * @param {TextChannel} channel - Discord text channel for posting results
+ * @param {Interaction} interaction - Command or button interaction
+ * @param {string} forceMeetingId - Optional: Force specific meeting ID (for button clicks)
+ */
+export async function executeStopRecording(
+  guildId,
+  channel,
+  interaction,
+  forceMeetingId = null
+) {
   try {
     // Get active recordings for this guild
     const activeRecordings = audioRecorder.getActiveRecordings();
 
     // Filter recordings for this guild
-    const guildRecordings = activeRecordings.filter(
-      (r) => r.guildId === interaction.guildId
-    );
+    const guildRecordings = activeRecordings.filter((r) => r.guildId === guildId);
 
     logger.debug('Active recordings check', {
       totalActive: activeRecordings.length,
       guildRecordings: guildRecordings.length,
-      guildId: interaction.guildId,
+      guildId,
     });
 
     if (guildRecordings.length === 0) {
@@ -52,11 +103,18 @@ export async function execute(interaction) {
       return await interaction.editReply({ embeds: [embed] });
     }
 
-    // Get the most recent recording for this guild
-    const latestRecording = guildRecordings[guildRecordings.length - 1];
-    const meetingId = latestRecording.meetingId;
+    // Determine which meeting to stop
+    let meetingId;
+    if (forceMeetingId) {
+      // Button click - use specific meeting ID
+      meetingId = forceMeetingId;
+    } else {
+      // Command - use most recent recording
+      const latestRecording = guildRecordings[guildRecordings.length - 1];
+      meetingId = latestRecording.meetingId;
+    }
 
-    logger.info('Stopping recording', { meetingId, guildId: interaction.guildId });
+    logger.info('Stopping recording', { meetingId, guildId });
 
     // Stop recording
     const recordingInfo = await audioRecorder.stopRecording(meetingId);
@@ -77,7 +135,7 @@ export async function execute(interaction) {
       recordingStatus: 'processing',
       endTimestamp: new Date(),
       duration: recordingInfo.duration,
-      audioFilePath: recordingInfo.filePath, // FIX: Save the audio file path
+      audioFilePath: recordingInfo.filePath,
     });
 
     logger.info('Recording stopped, starting processing pipeline', {
@@ -99,28 +157,23 @@ export async function execute(interaction) {
     });
 
     // Start background processing
-    processRecording(meetingId, interaction.channel, processingMessage, interaction.client)
-      .catch((error) => {
+    processRecording(meetingId, channel, processingMessage, interaction.client).catch(
+      (error) => {
         logger.error('Error in background processing', {
           error: error.message,
           meetingId,
         });
-      });
+      }
+    );
 
     logger.info('Processing pipeline initiated', { meetingId });
   } catch (error) {
-    logger.error('Error executing stop-recording command', {
+    logger.error('Error in executeStopRecording', {
       error: error.message,
       stack: error.stack,
-      userId: interaction.user.id,
-      guildId: interaction.guildId,
+      guildId,
     });
-
-    const embed = createErrorEmbed(
-      'Recording Error',
-      'Failed to stop recording. Please try again.'
-    );
-    await interaction.editReply({ embeds: [embed] });
+    throw error; // Re-throw to be caught by caller
   }
 }
 
@@ -259,12 +312,26 @@ async function processRecording(meetingId, channel, processingMessage, client) {
       attachments.push(new AttachmentBuilder(meeting.audioFilePath));
     }
 
-    // Post results to Discord
-    const resultMessage = await channel.send({
-      embeds: [embed],
-      files: attachments,
-      content: `🎉 **Meeting Complete** - ${updatedMeeting.meetingId}`,
-    });
+    // Post results to notification channel if configured
+    let resultMessage;
+    const notificationChannel = await getNotificationChannel(channel.guild);
+    if (notificationChannel && notificationChannel.id !== channel.id) {
+      resultMessage = await notificationChannel.send({
+        embeds: [embed],
+        files: attachments,
+        content: `🎉 **Meeting Complete** - ${updatedMeeting.meetingId}`,
+      });
+      // Optionally notify in original channel
+      await channel.send({
+        content: `✅ **Meeting Complete** posted in ${notificationChannel} (Meeting ID: \`${updatedMeeting.meetingId}\`)`,
+      }).catch(() => { });
+    } else {
+      resultMessage = await channel.send({
+        embeds: [embed],
+        files: attachments,
+        content: `🎉 **Meeting Complete** - ${updatedMeeting.meetingId}`,
+      });
+    }
 
     // Store Discord message ID for reference
     await mongoService.updateMeeting(meetingId, {
@@ -274,11 +341,17 @@ async function processRecording(meetingId, channel, processingMessage, client) {
 
     logger.info('Recording processing completed successfully', { meetingId });
 
-    // Update processing message
+    // Update processing message to point to final result (instead of duplicating summary)
     try {
+      const redirectEmbed = new EmbedBuilder()
+        .setColor('#32B8C6')
+        .setTitle('Recording Processed Successfully')
+        .setDescription('Results posted below. This message is just a status update.')
+        .setTimestamp();
+
       await processingMessage.edit({
-        embeds: [embed],
-        content: '✅ **Recording Processed Successfully**',
+        embeds: [redirectEmbed],
+        content: null,
       });
     } catch (error) {
       logger.warn('Could not update processing message', {
