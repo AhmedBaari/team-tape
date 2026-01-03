@@ -1,7 +1,10 @@
 import { Link, useLocation } from 'react-router-dom';
+import { useContext } from 'react';
+import { AuthContext } from '../App';
 
 export default function Navbar() {
     const location = useLocation();
+    const auth = useContext(AuthContext);
 
     const isActive = (path) => {
         return location.pathname === path
@@ -33,6 +36,17 @@ export default function Navbar() {
                                 Analytics
                             </Link>
                         </div>
+                    </div>
+
+                    {/* Logout Button */}
+                    <div className="flex items-center">
+                        <button
+                            onClick={() => auth?.handleLogout()}
+                            className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-700 rounded-md transition-colors"
+                            title="Logout"
+                        >
+                            🚪 Logout
+                        </button>
                     </div>
                 </div>
             </div>

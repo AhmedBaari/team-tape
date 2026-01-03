@@ -1,35 +1,72 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { useState } from 'react';
+import { useState, useEffect, createContext } from 'react';
 import Layout from './components/Layout';
 import Home from './pages/Home';
 import MeetingDetail from './pages/MeetingDetail';
 import Analytics from './pages/Analytics';
 
+// Create auth context to share logout function
+export const AuthContext = createContext(null);
+
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [apiKey, setApiKey] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const savedKey = localStorage.getItem('apiKey');
-    if (savedKey) {
-      setIsAuthenticated(true);
-      setApiKey(savedKey);
+    console.log('🔐 Checking authentication...');
+    try {
+      const savedKey = localStorage.getItem('apiKey');
+      if (savedKey) {
+        console.log('✅ Found saved API key');
+        setIsAuthenticated(true);
+        setApiKey(savedKey);
+      } else {
+        console.log('ℹ️ No saved API key found');
+      }
+    } catch (error) {
+      console.error('❌ Error reading localStorage:', error);
     }
+    setIsLoading(false);
   }, []);
 
   const handleLogin = (e) => {
     e.preventDefault();
+    console.log('🔑 Attempting login...');
     if (apiKey.trim()) {
-      localStorage.setItem('apiKey', apiKey);
-      setIsAuthenticated(true);
+      try {
+        localStorage.setItem('apiKey', apiKey);
+        setIsAuthenticated(true);
+        console.log('✅ Login successful');
+      } catch (error) {
+        console.error('❌ Error saving to localStorage:', error);
+      }
     }
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('apiKey');
-    setApiKey('');
-    setIsAuthenticated(false);
+    console.log('👋 Logging out...');
+    try {
+      localStorage.removeItem('apiKey');
+      setApiKey('');
+      setIsAuthenticated(false);
+      console.log('✅ Logout successful');
+    } catch (error) {
+      console.error('❌ Error during logout:', error);
+    }
   };
+
+  // Show loading state while checking auth
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="inline-block w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+          <p className="mt-4 text-gray-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (
@@ -85,16 +122,18 @@ function App() {
   }
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Layout />}>
-          <Route index element={<Home />} />
-          <Route path="meeting/:id" element={<MeetingDetail />} />
-          <Route path="analytics" element={<Analytics />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <AuthContext.Provider value={{ handleLogout }}>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Layout />}>
+            <Route index element={<Home />} />
+            <Route path="meeting/:id" element={<MeetingDetail />} />
+            <Route path="analytics" element={<Analytics />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </AuthContext.Provider>
   );
 }
 
