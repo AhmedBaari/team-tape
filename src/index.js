@@ -9,6 +9,7 @@ import audioRecorder from './services/audioRecorder.js';
 import apiRouter from './api/routes/index.js';
 import { notFoundHandler, errorHandler } from './api/utils/errorHandler.js';
 import mcpRouter from './api/routes/mcp.js';
+import mcpJsonRpcRouter from './api/routes/mcpJsonRpc.js';
 import { authenticateApiKey } from './api/middleware/auth.js';
 
 // Get __dirname equivalent in ES modules
@@ -104,10 +105,17 @@ function startExpressServer() {
 // Mount API routes
 app.use('/api/v1', apiRouter);
 
-// Mount MCP routes
+// Mount MCP routes - ORDER MATTERS!
+// JSON-RPC router must be first to handle POST requests
 if (process.env.ENABLE_MCP !== 'false') {
-  app.use('/mcp', authenticateApiKey, mcpRouter);
-  console.log('✅ MCP endpoints enabled at /mcp');
+  app.use('/mcp', authenticateApiKey, mcpJsonRpcRouter);
+  console.log('✅ MCP JSON-RPC endpoint enabled at POST /mcp');
+
+  // Mount legacy REST routes after JSON-RPC (for backward compatibility)
+  if (process.env.ENABLE_MCP_REST !== 'false') {
+    app.use('/mcp', authenticateApiKey, mcpRouter);
+    console.log('✅ MCP REST endpoints enabled at /mcp/resources/*');
+  }
 }
 
 // Serve dashboard static files (after building)
