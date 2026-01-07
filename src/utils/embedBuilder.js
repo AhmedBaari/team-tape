@@ -1,4 +1,4 @@
-import { EmbedBuilder } from 'discord.js';
+import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 
 /**
  * Creates a Discord embed for meeting summary
@@ -98,8 +98,7 @@ export function createMeetingSummaryEmbed(meetingData) {
   const participantsList = participants
     .map(
       (p) =>
-        `• **${p.username}** - ${Math.floor(p.duration / 60)}m ${p.duration % 60}s${
-          p.wasDeafened ? ' [Deafened]' : ''
+        `• **${p.username}** - ${Math.floor(p.duration / 60)}m ${p.duration % 60}s${p.wasDeafened ? ' [Deafened]' : ''
         }`
     )
     .join('\n');
@@ -123,14 +122,17 @@ export function createMeetingSummaryEmbed(meetingData) {
 
 /**
  * Creates a notification embed for recording start
+ * FEATURE #5: Returns both embed and button row
  * @param {string} channelName - Voice channel name
  * @param {Array} users - List of users in channel
- * @returns {EmbedBuilder}
+ * @param {string} meetingId - Meeting ID for button interaction (optional)
+ * @param {string} starterId - User ID who started the recording (optional)
+ * @returns {Object} { embed: EmbedBuilder, components: ActionRowBuilder[] }
  */
-export function createRecordingStartEmbed(channelName, users) {
+export function createRecordingStartEmbed(channelName, users, meetingId = null, starterId = null) {
   const embed = new EmbedBuilder()
     .setColor('#32B8C6') // Teal success color
-    .setTitle('💶 Recording Started')
+    .setTitle('🎙️ Recording Started')
     .setDescription(`Meeting recording has begun in **${channelName}**`)
     .addFields(
       {
@@ -146,7 +148,20 @@ export function createRecordingStartEmbed(channelName, users) {
     )
     .setTimestamp();
 
-  return embed;
+  // FEATURE #5: Add stop button if meetingId provided
+  const components = [];
+  if (meetingId && starterId) {
+    const stopButton = new ButtonBuilder()
+      .setCustomId(`stop_recording_${meetingId}_${starterId}_${Date.now()}`)
+      .setLabel('Stop Recording')
+      .setEmoji('🛑')
+      .setStyle(ButtonStyle.Danger);
+
+    const row = new ActionRowBuilder().addComponents(stopButton);
+    components.push(row);
+  }
+
+  return { embed, components };
 }
 
 /**

@@ -1,10 +1,14 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api/v1';
+// Default to the correct port (7705) for TeamTape API
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:7705/api/v1';
+
+console.log('🔗 API Base URL:', API_BASE_URL);
 
 // Create axios instance
 const apiClient = axios.create({
     baseURL: API_BASE_URL,
+    timeout: 30000, // 30 second timeout
     headers: {
         'Content-Type': 'application/json',
     },

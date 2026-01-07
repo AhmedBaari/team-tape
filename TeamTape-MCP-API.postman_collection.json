@@ -1,0 +1,331 @@
+{
+    "info": {
+        "name": "TeamTape MCP API",
+        "description": "Postman collection for testing TeamTape MCP endpoints - Model Context Protocol implementation for accessing meeting recordings and transcripts",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "MCP Resources",
+            "item": [
+                {
+                    "name": "List All Available Resources",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{API_KEY}}",
+                                "type": "text",
+                                "description": "API Key for authentication (set in variables)"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BASE_URL}}/mcp/resources",
+                            "host": [
+                                "{{BASE_URL}}"
+                            ],
+                            "path": [
+                                "mcp",
+                                "resources"
+                            ]
+                        },
+                        "description": "List all available MCP resources that can be accessed via the API"
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Meetings List (MCP Resource)",
+            "item": [
+                {
+                    "name": "Get Recent Meetings List",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{API_KEY}}",
+                                "type": "text",
+                                "description": "API Key for authentication"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BASE_URL}}/mcp/resources/meetings/list?limit=10&status=completed",
+                            "host": [
+                                "{{BASE_URL}}"
+                            ],
+                            "path": [
+                                "mcp",
+                                "resources",
+                                "meetings",
+                                "list"
+                            ],
+                            "query": [
+                                {
+                                    "key": "limit",
+                                    "value": "10",
+                                    "description": "Maximum number of meetings to return (default: 50)"
+                                },
+                                {
+                                    "key": "status",
+                                    "value": "completed",
+                                    "description": "Filter by status: recording, processing, completed, failed"
+                                }
+                            ]
+                        },
+                        "description": "Retrieve a list of recent meetings (MCP: meetings://list)\n\nReturns:\n- uri: meetings://meeting/{id}\n- name: Meeting title with date/time\n- description: Executive summary\n- mimeType: application/json\n- metadata: Including participants, key points, action items"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Recent Meetings (No Filter)",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{API_KEY}}",
+                                "type": "text"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BASE_URL}}/mcp/resources/meetings/list",
+                            "host": [
+                                "{{BASE_URL}}"
+                            ],
+                            "path": [
+                                "mcp",
+                                "resources",
+                                "meetings",
+                                "list"
+                            ]
+                        },
+                        "description": "Get meetings list with default parameters (limit: 50, all statuses)"
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Meeting Details (MCP Resource)",
+            "item": [
+                {
+                    "name": "Get Latest Meeting (First from List)",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{API_KEY}}",
+                                "type": "text"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BASE_URL}}/mcp/resources/meetings/list?limit=1",
+                            "host": [
+                                "{{BASE_URL}}"
+                            ],
+                            "path": [
+                                "mcp",
+                                "resources",
+                                "meetings",
+                                "list"
+                            ],
+                            "query": [
+                                {
+                                    "key": "limit",
+                                    "value": "1"
+                                }
+                            ]
+                        },
+                        "description": "Get the latest meeting. Response will contain the meeting URI in the format meetings://meeting/{id} that you can use in the next request.",
+                        "event": [
+                            {
+                                "listen": "test",
+                                "script": {
+                                    "exec": [
+                                        "// Extract the meeting ID from the response",
+                                        "if (pm.response.code === 200) {",
+                                        "  const data = pm.response.json();",
+                                        "  if (data.resources && data.resources.length > 0) {",
+                                        "    const uri = data.resources[0].uri;",
+                                        "    // Extract ID from meetings://meeting/{id}",
+                                        "    const meetingId = uri.split('/').pop();",
+                                        "    pm.environment.set('LATEST_MEETING_ID', meetingId);",
+                                        "    console.log('Latest meeting ID set:', meetingId);",
+                                        "  }",
+                                        "}",
+                                        ""
+                                    ],
+                                    "type": "text/javascript"
+                                }
+                            }
+                        ]
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Meeting Transcript and Summary",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{API_KEY}}",
+                                "type": "text",
+                                "description": "API Key for authentication"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BASE_URL}}/mcp/resources/meetings/{{LATEST_MEETING_ID}}",
+                            "host": [
+                                "{{BASE_URL}}"
+                            ],
+                            "path": [
+                                "mcp",
+                                "resources",
+                                "meetings",
+                                "{{LATEST_MEETING_ID}}"
+                            ]
+                        },
+                        "description": "Retrieve full transcript and metadata for a specific meeting (MCP: meetings://meeting/{id})\n\nAutomatically uses LATEST_MEETING_ID from the previous request. You can also manually set a meeting ID.\n\nReturns:\n- uri: meetings://meeting/{id}\n- name: Meeting title\n- description: Executive summary\n- mimeType: text/markdown\n- content: Full markdown-formatted content with:\n  - Meeting information (date, duration, channel, server, status)\n  - Participants list with speaking/total duration\n  - Summary with executive summary, key points, action items\n  - Full transcript"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Meeting by Specific ID",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{API_KEY}}",
+                                "type": "text"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BASE_URL}}/mcp/resources/meetings/mtg_xxxxxxxx",
+                            "host": [
+                                "{{BASE_URL}}"
+                            ],
+                            "path": [
+                                "mcp",
+                                "resources",
+                                "meetings",
+                                "mtg_xxxxxxxx"
+                            ]
+                        },
+                        "description": "Get a specific meeting by replacing 'mtg_xxxxxxxx' with the actual meeting ID from the meetings list"
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Health & Diagnostics",
+            "item": [
+                {
+                    "name": "Check API Health",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{BASE_URL}}/health",
+                            "host": [
+                                "{{BASE_URL}}"
+                            ],
+                            "path": [
+                                "health"
+                            ]
+                        },
+                        "description": "Check if the API is running and services are connected (no auth required)"
+                    },
+                    "response": []
+                },
+                {
+                    "name": "List API Endpoints",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{API_KEY}}",
+                                "type": "text"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json",
+                                "type": "text"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BASE_URL}}/api/v1/",
+                            "host": [
+                                "{{BASE_URL}}"
+                            ],
+                            "path": [
+                                "api",
+                                "v1",
+                                ""
+                            ]
+                        },
+                        "description": "List all available API endpoints and documentation"
+                    },
+                    "response": []
+                }
+            ]
+        }
+    ],
+    "variable": [
+        {
+            "key": "BASE_URL",
+            "value": "http://localhost:7705",
+            "type": "string",
+            "description": "Base URL for the TeamTape API. Default is localhost:7705. Change for remote deployment."
+        },
+        {
+            "key": "API_KEY",
+            "value": "",
+            "type": "string",
+            "description": "API Key for authentication. Set this to the value of your API_KEY environment variable."
+        },
+        {
+            "key": "LATEST_MEETING_ID",
+            "value": "",
+            "type": "string",
+            "description": "Automatically populated by the 'Get Latest Meeting' request. Stores the meeting ID of the most recent meeting."
+        }
+    ]
+}

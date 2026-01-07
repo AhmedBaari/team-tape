@@ -2,7 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import FormData from 'form-data';
 import axios from 'axios';
+
 import logger from '../utils/logger.js';
+import mongoService from './mongoService.js';
 
 /**
  * Transcription Service
@@ -47,7 +49,16 @@ class TranscriptionService {
    * @param {string} fallbackName - Default name if no mapping found
    * @returns {string} Display name
    */
-  getUserName(userId, fallbackName = null) {
+  async getUserName(userId, fallbackName = null, guildId = null) {
+    // Priority: GuildConfig > userMappings.json > fallbackName > userId
+    if (guildId) {
+      try {
+        const customName = await mongoService.getUserDisplayName(guildId, userId);
+        if (customName) return customName;
+      } catch (err) {
+        logger.debug('Error fetching custom display name from GuildConfig', { error: err.message, userId, guildId });
+      }
+    }
     return this.userMappings[userId] || fallbackName || userId;
   }
 
@@ -287,7 +298,15 @@ class TranscriptionService {
    * @param {Array} participants - List of meeting participants
    * @returns {Promise<Object>} Combined transcription with accurate speaker labels
    */
-  async transcribePerUser(userAudioFiles, participants = []) {
+  /**
+   * Transcribe audio files for each user separately with Discord-level speaker identification
+   * Uses custom display names from GuildConfig if available
+   * @param {Array} userAudioFiles - Array of {userId, filePath, segments} objects
+   * @param {Array} participants - List of meeting participants
+   * @param {string} guildId - Discord guild ID
+   * @returns {Promise<Object>} Combined transcription with accurate speaker labels
+   */
+  async transcribePerUser(userAudioFiles, participants = [], guildId = null) {
     try {
       if (!userAudioFiles || userAudioFiles.length === 0) {
         throw new Error('No user audio files provided for transcription');
@@ -315,7 +334,11 @@ class TranscriptionService {
           continue;
         }
 
-        const username = userMap.get(userId) || this.getUserName(userId) || userId;
+        // Use custom display name if available
+        let username = userMap.get(userId);
+        if (!username) {
+          username = await this.getUserName(userId, null, guildId);
+        }
 
         logger.info(`Transcribing audio for ${username} (${userId})`);
 

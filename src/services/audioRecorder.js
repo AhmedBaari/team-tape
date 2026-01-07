@@ -91,6 +91,8 @@ class AudioRecorder {
         userAudioFiles: [],          // For transcription service
         activeSubscriptions: new Map(), // Map<userId, {subscription, decoder, writeStream, filePath}> - SINGLE active sub per user
         isRecording: true,
+        emptyChannelTimer: null, // FEATURE #4: Timer for auto-stop
+        isStopping: false, // FEATURE #4: Flag to prevent duplicate stops
       };
 
       this.activeRecordings.set(meetingId, recordingSession);
@@ -317,6 +319,29 @@ class AudioRecorder {
       const session = this.activeRecordings.get(meetingId);
       if (!session) {
         throw new Error(`Recording session not found: ${meetingId}`);
+      }
+
+      // FEATURE #4: Prevent duplicate stops
+      if (session.isStopping) {
+        logger.warn(`Recording ${meetingId} is already stopping, skipping duplicate stop`);
+        return {
+          meetingId,
+          filePath: session.filePath,
+          fileName: session.fileName,
+          duration: Math.floor((Date.now() - session.startTime) / 1000),
+          participantCount: session.userAudioStreams.size,
+          channelId: session.channelId,
+          guildId: session.guildId,
+        };
+      }
+
+      session.isStopping = true;
+
+      // FEATURE #4: Clear auto-stop timer if exists
+      if (session.emptyChannelTimer) {
+        clearTimeout(session.emptyChannelTimer);
+        session.emptyChannelTimer = null;
+        logger.debug(`Cleared auto-stop timer for ${meetingId}`);
       }
 
       // Close all user audio streams and wait for them to finish
@@ -578,6 +603,51 @@ class AudioRecorder {
       }
     }
     return recordings;
+  }
+
+  /**
+   * FEATURE #4: Start auto-stop timer for empty channel
+   * @param {string} meetingId - Meeting identifier
+   * @param {Function} callback - Function to call after 30 seconds
+   */
+  startEmptyChannelTimer(meetingId, callback) {
+    const session = this.activeRecordings.get(meetingId);
+    if (!session) {
+      logger.warn(`Cannot start timer: Recording session not found: ${meetingId}`);
+      return;
+    }
+    // Clear existing timer if any
+    if (session.emptyChannelTimer) {
+      clearTimeout(session.emptyChannelTimer);
+    }
+    logger.info(`Starting 30-second auto-stop timer for ${meetingId}`);
+    session.emptyChannelTimer = setTimeout(async () => {
+      logger.info(`Auto-stop timer expired for ${meetingId}, executing callback`);
+      try {
+        await callback();
+      } catch (error) {
+        logger.error('Error in auto-stop timer callback', {
+          error: error.message,
+          meetingId,
+        });
+      }
+    }, 30000); // 30 seconds
+  }
+
+  /**
+   * FEATURE #4: Cancel auto-stop timer
+   * @param {string} meetingId - Meeting identifier
+   */
+  cancelEmptyChannelTimer(meetingId) {
+    const session = this.activeRecordings.get(meetingId);
+    if (!session) {
+      return;
+    }
+    if (session.emptyChannelTimer) {
+      clearTimeout(session.emptyChannelTimer);
+      session.emptyChannelTimer = null;
+      logger.info(`Cancelled auto-stop timer for ${meetingId} (user rejoined)`);
+    }
   }
 
   /**

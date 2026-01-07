@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 import logger from '../utils/logger.js';
 import Meeting from '../models/Meeting.js';
 
+import GuildConfig from '../models/GuildConfig.js';
+
 /**
  * MongoDB Service for meeting data persistence
  * Handles connection, CRUD operations, and data retrieval
@@ -9,6 +11,46 @@ import Meeting from '../models/Meeting.js';
 class MongoService {
   constructor() {
     this.connected = false;
+  }
+
+  /**
+   * Get or create guild config
+   * @param {string} guildId - Discord guild ID
+   * @returns {Promise<Object>} GuildConfig document
+   */
+  async getOrCreateGuildConfig(guildId) {
+    return await GuildConfig.getOrCreate(guildId);
+  }
+
+  /**
+   * Set notification channel for guild
+   * @param {string} guildId - Discord guild ID
+   * @param {string} channelId - Channel ID
+   * @returns {Promise<Object>} GuildConfig document
+   */
+  async setNotificationChannel(guildId, channelId) {
+    return await GuildConfig.setNotificationChannel(guildId, channelId);
+  }
+
+  /**
+   * Set custom display name for user in guild
+   * @param {string} guildId - Discord guild ID
+   * @param {string} userId - Discord user ID
+   * @param {string} displayName - Custom name
+   * @returns {Promise<Object>} GuildConfig document
+   */
+  async setUserDisplayName(guildId, userId, displayName) {
+    return await GuildConfig.setUserDisplayName(guildId, userId, displayName);
+  }
+
+  /**
+   * Get custom display name for user in guild
+   * @param {string} guildId - Discord guild ID
+   * @param {string} userId - Discord user ID
+   * @returns {Promise<string|null>} Custom name or null
+   */
+  async getUserDisplayName(guildId, userId) {
+    return await GuildConfig.getUserDisplayName(guildId, userId);
   }
 
   /**
